@@ -12,32 +12,42 @@ jobs:
       image: archlinux:latest
     steps:
       - name: Install pacman dependencies
-        run: pacman -Sy --noconfirm --needed base-devel git rust openssh
+        run: |
+          pacman -Sy --noconfirm --needed base-devel git rust openssh sudo
+          
+          # Buat user non-root bernama 'builder' karena makepkg tidak boleh dijalankan sebagai root
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          
+          # Ubah kepemilikan direktori kerja agar bisa diakses oleh user 'builder'
+          chown -R builder:builder /__w/Atha/Atha
 
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup SSH for AUR
-        env:
-          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          echo "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur_id_rsa
-          chmod 600 ~/.ssh/aur_id_rsa
-          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          mkdir -p /home/builder/.ssh
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > /home/builder/.ssh/aur_id_rsa
+          chmod 600 /home/builder/.ssh/aur_id_rsa
+          ssh-keyscan aur.archlinux.org >> /home/builder/.ssh/known_hosts
           
           git config --global user.name "Bangkah"
           git config --global user.email "bangkah@aur.archlinux.org"
           git config --global --add safe.directory '*'
           
-          cat << EOF > ~/.ssh/config
+          cat << EOF > /home/builder/.ssh/config
           Host aur.archlinux.org
-            IdentityFile ~/.ssh/aur_id_rsa
+            IdentityFile /home/builder/.ssh/aur_id_rsa
             User aur
           EOF
+          
+          chown -R builder:builder /home/builder/.ssh
 
       - name: Generate .SRCINFO & Sync to AUR
+        shell: su - builder -c "bash {0}"
         run: |
+          cd /__w/Atha/Atha
           VERSION=${GITHUB_REF#refs/tags/v}
           
           sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
