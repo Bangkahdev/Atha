@@ -620,7 +620,7 @@ fn history(a: HistoryArgs) -> Result<(), String> {
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| l.split('|').collect())
-        .filter(|r| r.len() >= 6)
+        .filter(|r: &String| r.len() >= 6)
         .filter(|r| a.action.as_deref().map_or(true, |x| r[1] == x))
         .filter(|r| a.status.as_deref().map_or(true, |x| r[4] == x))
         .collect();
