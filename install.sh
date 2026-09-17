@@ -5,8 +5,8 @@ set -e
 echo "[atha] Installing Atha..."
 
 REPO="https://github.com/Bangkah/Atha.git"
-ARCHIVE_URL="https://github.com/Bangkah/Atha/archive/refs/heads/main.tar.gz"   
-TMP_DIR="/tmp/atha"
+ARCHIVE_URL="https://github.com/Bangkah/Atha/archive/refs/heads/main.tar.gz"
+TMP_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/atha-installer"
 SRC_DIR=""
 
 require_cmd() {
@@ -18,6 +18,7 @@ require_cmd() {
 
 require_cmd sudo
 require_cmd tar
+require_cmd cargo
 
 have_cmd() {
     command -v "$1" >/dev/null 2>&1
@@ -55,12 +56,7 @@ if [ -z "$SRC_DIR" ] || [ ! -d "$SRC_DIR" ]; then
     exit 1
 fi
 
-sudo mkdir -p /usr/lib/atha
-sudo rm -rf /usr/lib/atha/commands
-sudo cp -r "$SRC_DIR/commands" /usr/lib/atha/
-sudo cp "$SRC_DIR/atha" /usr/bin/atha
-
-sudo chmod +x /usr/bin/atha
-sudo find /usr/lib/atha/commands -type f -name "*.sh" -exec chmod +x {} \;
+(cd "$SRC_DIR" && cargo build --release)
+sudo install -Dm755 "$SRC_DIR/target/release/atha" /usr/bin/atha
 
 echo "[atha] Installation complete!"

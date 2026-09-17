@@ -13,10 +13,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Run ShellCheck on Executable & Commands
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check and test
         run: |
-          echo "Linting main executable..."
-          shellcheck -x -e SC1091 atha
-          
-          echo "Linting command modules..."
-          find commands -name "*.sh" -print0 | xargs -0 shellcheck -x -e SC1091,SC2181,SC2034,SC1003
+          cargo fmt --all -- --check
+          cargo check --all-targets
+          cargo test --all-targets

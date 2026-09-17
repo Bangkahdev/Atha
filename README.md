@@ -10,7 +10,7 @@
   <a href="https://github.com/Bangkah/Atha"><img src="https://img.shields.io/github/stars/Bangkah/Atha?style=flat-square" alt="GitHub Stars"></a>
 </p>
 
-**ATHA** is a safety and workflow layer for `pacman` on Arch Linux. 
+**ATHA** is a Rust safety and workflow layer for `pacman` on Arch Linux.
 
 It is designed to improve package-operation safety, decision transparency, and operational auditability while seamlessly preserving native Arch Linux behavior.
 
@@ -56,9 +56,9 @@ Daily package operations are often too opaque for routine use. ATHA addresses th
 ## Requirements
 
 - Arch Linux
-- `bash`, `pacman`, `sudo`
+- `pacman`, `sudo`
 - `git` & `base-devel` *(Standard requirements for AUR builds)*
-- `curl` & `jq` *(For AUR RPC API fallback)*
+- Network access *(for AUR RPC API fallback)*
 - `pacman-contrib` *(For safe system update checks)*
 
 ## Installation
@@ -132,7 +132,7 @@ atha --help
 
 ## Operational Notes
 
-* **Install:** Automatically skips packages that are already installed and falls back to the AUR when a package is missing from official repositories.
+* **Install:** Automatically skips packages that are already installed and falls back to the AUR when a package is missing from official repositories. The native Rust binary executes external commands with argument arrays (never through a shell).
 * **Remove:** Uses `pacman -Rns` to cleanly remove packages along with their unneeded dependencies and configuration files. Skips packages that are not present.
 * **Search & Info:** Falls back to querying the AUR API if a package isn't found in the official sync database.
 * **Update:** `--plan` and `--dry-run` are non-destructive and utilize `checkupdates` to prevent partial upgrade issues.
@@ -177,4 +177,3 @@ atha --help
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](https://www.google.com/search?q=LICENSE) for details.
-
