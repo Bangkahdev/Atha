@@ -8,12 +8,14 @@ on:
 jobs:
   aur-publish:
     runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
     steps:
+      - name: Install pacman dependencies
+        run: pacman -Sy --noconfirm --needed base-devel git rust
+
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Setup SSH for AUR
         env:
@@ -26,6 +28,7 @@ jobs:
           
           git config --global user.name "Bangkah"
           git config --global user.email "bangkah@aur.archlinux.org"
+          git config --global --add safe.directory '*'
           
           cat << EOF > ~/.ssh/config
           Host aur.archlinux.org
