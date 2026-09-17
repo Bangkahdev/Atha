@@ -12,7 +12,7 @@ jobs:
       image: archlinux:latest
     steps:
       - name: Install pacman dependencies
-        run: pacman -Sy --noconfirm --needed base-devel git rust
+        run: pacman -Sy --noconfirm --needed base-devel git rust openssh
 
       - name: Checkout Repository
         uses: actions/checkout@v4
