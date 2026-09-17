@@ -15,34 +15,35 @@ jobs:
         run: |
           pacman -Sy --noconfirm --needed base-devel git rust openssh sudo
           
-          # Buat user non-root bernama 'builder' karena makepkg tidak boleh dijalankan sebagai root
+          # Buat user non-root 'builder'
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-          
-          # Ubah kepemilikan direktori kerja agar bisa diakses oleh user 'builder'
-          chown -R builder:builder /__w/Atha/Atha
 
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup SSH for AUR
+      - name: Fix Workspace Permissions
         run: |
-          mkdir -p /home/builder/.ssh
-          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > /home/builder/.ssh/aur_id_rsa
-          chmod 600 /home/builder/.ssh/aur_id_rsa
-          ssh-keyscan aur.archlinux.org >> /home/builder/.ssh/known_hosts
+          # Berikan kepemilikan direktori workspace ke user builder agar tidak permission denied
+          chown -R builder:builder /__w/Atha
+
+      - name: Setup SSH for AUR
+        shell: su - builder -c "bash {0}"
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur_id_rsa
+          chmod 600 ~/.ssh/aur_id_rsa
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
           
           git config --global user.name "Bangkah"
           git config --global user.email "bangkah@aur.archlinux.org"
           git config --global --add safe.directory '*'
           
-          cat << EOF > /home/builder/.ssh/config
+          cat << EOF > ~/.ssh/config
           Host aur.archlinux.org
-            IdentityFile /home/builder/.ssh/aur_id_rsa
+            IdentityFile ~/.ssh/aur_id_rsa
             User aur
           EOF
-          
-          chown -R builder:builder /home/builder/.ssh
 
       - name: Generate .SRCINFO & Sync to AUR
         shell: su - builder -c "bash {0}"
@@ -55,12 +56,13 @@ jobs:
           
           makepkg --printsrcinfo > .SRCINFO
           
-          git clone ssh://aur@aur.archlinux.org/atha.git ../aur-atha
+          # Clone AUR repo ke /tmp agar aman dari masalah permission direktori kerja utama
+          git clone ssh://aur@aur.archlinux.org/atha.git /tmp/aur-atha
           
-          cp PKGBUILD ../aur-atha/
-          cp .SRCINFO ../aur-atha/
+          cp PKGBUILD /tmp/aur-atha/
+          cp .SRCINFO /tmp/aur-atha/
           
-          cd ../aur-atha
+          cd /tmp/aur-atha
           git add PKGBUILD .SRCINFO
           git commit -m "maint: release version $VERSION" || echo "No changes to commit"
           git push origin master
