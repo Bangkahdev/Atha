@@ -48,21 +48,28 @@ jobs:
       - name: Generate .SRCINFO & Sync to AUR
         shell: su - builder -c "bash {0}"
         run: |
-          cd /__w/Atha/Atha
-          VERSION=${GITHUB_REF#refs/tags/v}
-          
-          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
-          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
-          
-          makepkg --printsrcinfo > .SRCINFO
-          
-          # Clone AUR repo ke /tmp agar aman dari masalah permission direktori kerja utama
-          git clone ssh://aur@aur.archlinux.org/atha.git /tmp/aur-atha
-          
-          cp PKGBUILD /tmp/aur-atha/
-          cp .SRCINFO /tmp/aur-atha/
-          
-          cd /tmp/aur-atha
-          git add PKGBUILD .SRCINFO
-          git commit -m "maint: release version $VERSION" || echo "No changes to commit"
-          git push origin master
+            cd /__w/Atha/Atha
+            
+            VERSION="${GITHUB_REF_NAME:-${GITHUB_REF#refs/tags/v}}"
+            VERSION="${VERSION#v}" 
+            
+            echo "Building for version: $VERSION"
+            if [ -z "$VERSION" ]; then
+              echo "Error: Version is empty!"
+              exit 1
+            fi
+            
+            sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+            sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+            
+            makepkg --printsrcinfo > .SRCINFO
+            
+            git clone ssh://aur@aur.archlinux.org/atha.git /tmp/aur-atha
+            
+            cp PKGBUILD /tmp/aur-atha/
+            cp .SRCINFO /tmp/aur-atha/
+            
+            cd /tmp/aur-atha
+            git add PKGBUILD .SRCINFO
+            git commit -m "maint: release version $VERSION" || echo "No changes to commit"
+            git push origin master
