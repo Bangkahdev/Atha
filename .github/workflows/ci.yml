@@ -60,7 +60,6 @@ jobs:
           # METHOD 1: Install from Source Code (Clone & Build)
           # ----------------------------------------------------
           echo "[Install Vector 1/5] Testing Source Code (git clone + cargo build)..."
-          # Pastikan user builder juga menginisialisasi/menggunakan rustup stable secara eksplisit
           su - builder -c "export PATH=\$HOME/.cargo/bin:\$PATH && rustup default stable && cd /__w/Atha/Atha && cargo build --release" || { echo "Failed: Source build"; exit 1; }
           sudo cp /__w/Atha/Atha/target/release/atha /usr/local/bin/atha-from-source
           atha-from-source --version || { echo "Failed: Running source binary"; exit 1; }
@@ -78,13 +77,16 @@ jobs:
           echo "[Install Vector 3/5] Testing curl & wget Download Simulation..."
           mkdir -p /tmp/mock-github-releases/v3.1.1/
           cp /__w/Atha/Atha/target/release/atha /tmp/mock-github-releases/v3.1.1/atha-x86_64-linux
-          
-          # Uji unduh tiruan menggunakan curl
-          curl -sLo /tmp/atha-curl-download /tmp/mock-github-releases/v3.1.1/atha-x86_64-linux
+
+          # curl butuh skema URL yang eksplisit (http/https/file). Path lokal biasa
+          # akan dianggap "malformed URL" oleh curl dan keluar dengan exit code 3,
+          # jadi kita tambahkan prefix file:// di sini.
+          curl -sLo /tmp/atha-curl-download "file:///tmp/mock-github-releases/v3.1.1/atha-x86_64-linux" || { echo "Failed: curl download"; exit 1; }
           chmod +x /tmp/atha-curl-download
           /tmp/atha-curl-download --version || { echo "Failed: curl downloaded binary"; exit 1; }
 
-          # Uji unduh tiruan menggunakan wget (tanpa skema file:// yang tidak didukung wget)
+          # wget mendukung path lokal apa adanya, tapi tetap kita fallback ke cp
+          # kalau wget-nya tidak tersedia atau gagal karena alasan lain.
           wget -qO /tmp/atha-wget-download /tmp/mock-github-releases/v3.1.1/atha-x86_64-linux || {
             cp /tmp/mock-github-releases/v3.1.1/atha-x86_64-linux /tmp/atha-wget-download
           }
@@ -95,7 +97,6 @@ jobs:
           # METHOD 4: Install via PKGBUILD (makepkg)
           # ----------------------------------------------------
           echo "[Install Vector 4/5] Testing PKGBUILD local packaging (makepkg)..."
-          # Sesuaikan sumber PKGBUILD agar menunjuk ke file lokal untuk pengujian kontainer tanpa internet release
           su - builder -c "cd /__w/Atha/Atha && makepkg -si --noconfirm" || { echo "Failed: makepkg local install"; exit 1; }
           atha --version || { echo "Failed: Executing package installed via makepkg"; exit 1; }
 
@@ -103,7 +104,6 @@ jobs:
           # METHOD 5: Install via AUR Helper Simulation (yay / pacman wrapper)
           # ----------------------------------------------------
           echo "[Install Vector 5/5] Testing AUR Helper workflow simulation..."
-          # Memastikan paket terdaftar dengan benar di database pacman lokal sistem
           pacman -Q atha || { echo "Failed: Package not registered in pacman database"; exit 1; }
 
           echo "[QA] SUCCESS: All 5 Installation Vectors Verified!"
