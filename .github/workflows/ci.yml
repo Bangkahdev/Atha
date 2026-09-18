@@ -1,8 +1,10 @@
-name: CI (Test & Lint)
+name: CI (Test, Lint & QA)
 
 on:
   push:
     branches: [ "main", "master" ]
+    tags:
+      - 'v*'
   pull_request:
     branches: [ "main", "master" ]
 
@@ -11,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -21,3 +23,47 @@ jobs:
           cargo fmt --all -- --check
           cargo check --all-targets
           cargo test --all-targets
+
+  qa-archlinux:
+    name: QA Smoke Test (Arch Linux)
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          pacman -Sy --noconfirm --needed base-devel rustup git
+
+      - name: Configure Rust toolchain
+        run: |
+          rustup default stable
+
+      - name: Build Release Binary
+        run: |
+          cargo build --release
+
+      - name: QA Smoke Test
+        run: |
+          echo "=== Running QA Smoke Tests ==="
+          if [ ! -f "target/release/atha" ]; then
+            echo "Error: Binary not found!"
+            exit 1
+          fi
+
+          cp target/release/atha /usr/bin/atha
+
+          echo "Testing --version..."
+          atha --version
+
+          echo "Testing --help..."
+          atha --help
+
+          echo "Testing doctor command..."
+          atha doctor || true
+
+          echo "=== QA Tests Passed Successfully! ==="
