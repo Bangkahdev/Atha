@@ -60,7 +60,8 @@ jobs:
           # METHOD 1: Install from Source Code (Clone & Build)
           # ----------------------------------------------------
           echo "[Install Vector 1/5] Testing Source Code (git clone + cargo build)..."
-          su - builder -c "cd /__w/Atha/Atha && cargo build --release" || { echo "Failed: Source build"; exit 1; }
+          # Pastikan user builder juga menginisialisasi/menggunakan rustup stable secara eksplisit
+          su - builder -c "export PATH=\$HOME/.cargo/bin:\$PATH && rustup default stable && cd /__w/Atha/Atha && cargo build --release" || { echo "Failed: Source build"; exit 1; }
           sudo cp /__w/Atha/Atha/target/release/atha /usr/local/bin/atha-from-source
           atha-from-source --version || { echo "Failed: Running source binary"; exit 1; }
 
