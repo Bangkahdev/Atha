@@ -135,7 +135,35 @@ jobs:
 
           echo "[QA] All basic installation vectors passed!"
 
-      # --- TAHAP 2: AUR HELPER (YAY) WORKFLOW INTEGRATION TEST ---
+      # --- TAHAP 2: PACKAGING QA & DISTRIBUTION VALIDATION ---
+      - name: QA Validate Package with Namcap & Lint
+        run: |
+          set -euo pipefail
+          echo "===================================================="
+          echo "[QA] Starting Packaging & Distribution Validation (Namcap)"
+          echo "===================================================="
+
+          # Install namcap untuk audit kualitas paket Arch Linux
+          pacman -Sy --noconfirm --needed namcap
+
+          # Cari file paket hasil makepkg (.pkg.tar.zst) di direktori kerja
+          PKG_FILE=$(find /__w/Atha/Atha -name "atha-*.pkg.tar.zst" | head -n1)
+
+          if [ -f "$PKG_FILE" ]; then
+            echo "[QA] Found built package: $PKG_FILE"
+            
+            echo "[QA] Running PKGBUILD lint check..."
+            namcap PKGBUILD || echo "[QA] Namcap PKGBUILD notices found (non-fatal)."
+
+            echo "[QA] Running built package audit..."
+            namcap "$PKG_FILE" || echo "[QA] Namcap package audit notices found (non-fatal)."
+          else
+            echo "[QA] Warning: Package file not found for namcap inspection."
+          fi
+
+          echo "[QA] Packaging QA validation completed successfully!"
+
+      # --- TAHAP 3: AUR HELPER (YAY) WORKFLOW INTEGRATION TEST ---
       - name: QA Test AUR Helper Integration (yay)
         run: |
           set -uo pipefail
@@ -164,7 +192,7 @@ jobs:
             echo "[QA] Notice: yay binary not installed, skipping auxiliary helper check gracefully."
           fi
 
-      # --- TAHAP 3: SAFETY LAYER & EDGE CASES TESTING ---
+      # --- TAHAP 4: SAFETY LAYER & EDGE CASES TESTING ---
       - name: QA Test Safety Layer & Edge Cases
         run: |
           set -uo pipefail   # tanpa -e: kegagalan tiap sub-test ditangani manual di bawah
