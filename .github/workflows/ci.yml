@@ -151,12 +151,30 @@ jobs:
 
           if [ -f "$PKG_FILE" ]; then
             echo "[QA] Found built package: $PKG_FILE"
-            
+
+            # namcap mengembalikan exit code non-zero kalau ADA temuan apa pun
+            # (baik level W: warning maupun E: error), jadi kita tidak bisa
+            # gating dari exit code-nya saja — harus baca isinya. `|| true`
+            # di sini murni supaya `set -e` tidak langsung menghentikan script
+            # sebelum kita sempat memeriksa outputnya; kegagalan CI yang
+            # sesungguhnya ditentukan di bawah lewat pengecekan baris "E: ".
             echo "[QA] Running PKGBUILD lint check..."
-            namcap PKGBUILD || echo "[QA] Namcap PKGBUILD notices found (non-fatal)."
+            namcap_pkgbuild_output="$(namcap PKGBUILD 2>&1)" || true
+            echo "$namcap_pkgbuild_output"
+            if echo "$namcap_pkgbuild_output" | grep -q '^E: '; then
+              echo "[QA] Namcap found PKGBUILD ERROR(S) — failing CI."
+              exit 1
+            fi
+            echo "[QA] Namcap PKGBUILD notices above (if any) are warnings only (non-fatal)."
 
             echo "[QA] Running built package audit..."
-            namcap "$PKG_FILE" || echo "[QA] Namcap package audit notices found (non-fatal)."
+            namcap_pkg_output="$(namcap "$PKG_FILE" 2>&1)" || true
+            echo "$namcap_pkg_output"
+            if echo "$namcap_pkg_output" | grep -q '^E: '; then
+              echo "[QA] Namcap found package ERROR(S) — failing CI."
+              exit 1
+            fi
+            echo "[QA] Namcap package notices above (if any) are warnings only (non-fatal)."
           else
             echo "[QA] Warning: Package file not found for namcap inspection."
           fi
