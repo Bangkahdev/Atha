@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "atha"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "chrono",
  "clap",
