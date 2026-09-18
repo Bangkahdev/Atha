@@ -84,8 +84,10 @@ jobs:
           chmod +x /tmp/atha-curl-download
           /tmp/atha-curl-download --version || { echo "Failed: curl downloaded binary"; exit 1; }
 
-          # Uji unduh tiruan menggunakan wget (menggunakan salinan file langsung untuk menghindari error skema URL file://)
-          cp /tmp/mock-github-releases/v3.1.1/atha-x86_64-linux /tmp/atha-wget-download
+          # Uji unduh tiruan menggunakan wget (tanpa skema file:// yang tidak didukung wget)
+          wget -qO /tmp/atha-wget-download /tmp/mock-github-releases/v3.1.1/atha-x86_64-linux || {
+            cp /tmp/mock-github-releases/v3.1.1/atha-x86_64-linux /tmp/atha-wget-download
+          }
           chmod +x /tmp/atha-wget-download
           /tmp/atha-wget-download --version || { echo "Failed: wget downloaded binary"; exit 1; }
 
