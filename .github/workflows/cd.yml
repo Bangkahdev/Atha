@@ -20,12 +20,12 @@ jobs:
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
       - name: Checkout Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Fix Workspace Permissions
         run: |
           # Berikan kepemilikan direktori workspace ke user builder agar tidak permission denied
-          chown -R builder:builder /__w/Atha
+          chown -R builder:builder "$GITHUB_WORKSPACE"
 
       - name: Setup SSH for AUR
         shell: su - builder -c "bash {0}"
@@ -44,9 +44,11 @@ jobs:
             IdentityFile ~/.ssh/aur_id_rsa
             User aur
           EOF
+
       - name: Generate .SRCINFO & Sync to AUR
         env:
           TAG_REF: ${{ github.ref_name }}
+          WORKSPACE: ${{ github.workspace }}
         run: |
           VERSION="${TAG_REF#v}"
           
@@ -57,7 +59,7 @@ jobs:
           fi
           
           sudo -u builder bash -c "
-            cd /__w/Atha/Atha
+            cd \"$WORKSPACE\"
             sed -i 's/^pkgver=.*/pkgver=$VERSION/' PKGBUILD
             sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
             
@@ -72,4 +74,3 @@ jobs:
             git commit -m 'maint: release version $VERSION' || echo 'No changes to commit'
             git push origin master
           "
-     
