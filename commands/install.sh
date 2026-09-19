@@ -168,7 +168,11 @@ if [ "$dry_run" -eq 1 ]; then
             if [ "$source" = "official" ]; then
                 print_info "$pkg -> would execute: sudo pacman -S $pkg"
             else
-                print_info "$pkg -> would execute: git clone https://aur.archlinux.org/$pkg.git && makepkg -si --noconfirm"
+                if [ "$auto_yes" -eq 1 ]; then
+                    print_info "$pkg -> would execute: git clone https://aur.archlinux.org/$pkg.git && makepkg -si --noconfirm"
+                else
+                    print_info "$pkg -> would execute: git clone https://aur.archlinux.org/$pkg.git && makepkg -si"
+                fi
             fi
         fi
     done
@@ -260,9 +264,17 @@ if [ ${#aur_targets[@]} -gt 0 ]; then
             die "Failed to clone AUR package: $pkg"
         fi
 
+        # Sebelumnya --noconfirm dipaksa terus, jadi prompt dependency/provider/
+        # conflict dari makepkg ikut ter-auto-approve walau user tidak pernah
+        # menyertakan --yes. Sekarang perilakunya disamakan dengan jalur official:
+        # --noconfirm cuma ditambahkan kalau auto_yes aktif.
         (
             cd "$build_dir/$pkg" || exit 1
-            makepkg -si --noconfirm
+            makepkg_flags=("-si")
+            if [ "$auto_yes" -eq 1 ]; then
+                makepkg_flags+=("--noconfirm")
+            fi
+            makepkg "${makepkg_flags[@]}"
         )
         rc=$?
 

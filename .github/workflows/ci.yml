@@ -152,26 +152,44 @@ jobs:
           if [ -f "$PKG_FILE" ]; then
             echo "[QA] Found built package: $PKG_FILE"
 
-            # namcap mengembalikan exit code non-zero kalau ADA temuan apa pun
-            # (baik level W: warning maupun E: error), jadi kita tidak bisa
-            # gating dari exit code-nya saja — harus baca isinya. `|| true`
-            # di sini murni supaya `set -e` tidak langsung menghentikan script
-            # sebelum kita sempat memeriksa outputnya; kegagalan CI yang
-            # sesungguhnya ditentukan di bawah lewat pengecekan baris "E: ".
+            # PENTING: namcap SELALU meng-prefix tiap baris diagnosisnya dengan
+            # nama target yang diperiksa, misalnya:
+            #   PKGBUILD E: Duplicate source entry ...
+            #   atha-3.1.1-1-x86_64.pkg.tar.zst E: Dependency foo included but not needed
+            # Jadi pola `^E: ` (anchored ke awal baris) TIDAK AKAN PERNAH match.
+            # Di sini kita cari "E: " di mana pun dalam baris.
+            #
+            # namcap juga selalu exit non-zero setiap kali ada temuan APA PUN
+            # (baik W: maupun E:), jadi exit code sendirian tidak bisa dipakai
+            # untuk gating. Tapi exit code tetap kita simpan: kalau non-zero
+            # DAN outputnya sama sekali tidak berisi diagnostik W:/E: yang wajar,
+            # itu tanda namcap-nya sendiri gagal jalan (crash/error internal) —
+            # itu juga wajib menggagalkan CI, bukan cuma dianggap "non-fatal".
+
             echo "[QA] Running PKGBUILD lint check..."
-            namcap_pkgbuild_output="$(namcap PKGBUILD 2>&1)" || true
+            namcap_pkgbuild_output="$(namcap PKGBUILD 2>&1)"
+            namcap_pkgbuild_rc=$?
             echo "$namcap_pkgbuild_output"
-            if echo "$namcap_pkgbuild_output" | grep -q '^E: '; then
+            if echo "$namcap_pkgbuild_output" | grep -qE '(^|[[:space:]])E:[[:space:]]'; then
               echo "[QA] Namcap found PKGBUILD ERROR(S) — failing CI."
+              exit 1
+            fi
+            if [ "$namcap_pkgbuild_rc" -ne 0 ] && ! echo "$namcap_pkgbuild_output" | grep -qE '(^|[[:space:]])(W|E):[[:space:]]'; then
+              echo "[QA] namcap failed to run against PKGBUILD (no diagnostics produced) — failing CI."
               exit 1
             fi
             echo "[QA] Namcap PKGBUILD notices above (if any) are warnings only (non-fatal)."
 
             echo "[QA] Running built package audit..."
-            namcap_pkg_output="$(namcap "$PKG_FILE" 2>&1)" || true
+            namcap_pkg_output="$(namcap "$PKG_FILE" 2>&1)"
+            namcap_pkg_rc=$?
             echo "$namcap_pkg_output"
-            if echo "$namcap_pkg_output" | grep -q '^E: '; then
+            if echo "$namcap_pkg_output" | grep -qE '(^|[[:space:]])E:[[:space:]]'; then
               echo "[QA] Namcap found package ERROR(S) — failing CI."
+              exit 1
+            fi
+            if [ "$namcap_pkg_rc" -ne 0 ] && ! echo "$namcap_pkg_output" | grep -qE '(^|[[:space:]])(W|E):[[:space:]]'; then
+              echo "[QA] namcap failed to run against the built package (no diagnostics produced) — failing CI."
               exit 1
             fi
             echo "[QA] Namcap package notices above (if any) are warnings only (non-fatal)."
