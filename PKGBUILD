@@ -11,5 +11,17 @@ source=("$pkgname-$pkgver::https://github.com/Bangkah/Atha/releases/download/v$p
 sha256sums=('ad5d632362a032f001054742244f2e6f16750bdcf6066ff5833a2218ccac8d14')
 
 package() {
-    install -Dm755 "$srcdir/$pkgname-$pkgver" "$pkgdir/usr/bin/atha"
+    cd "$srcdir/$_pkgname-$pkgver"
+    
+    # Instal biner utama hasil build Cargo
+    install -Dm755 "target/release/atha" "$pkgdir/usr/bin/atha"
+    
+    # Salin file lisensi agar sesuai dengan standar Arch Linux
+    if [ -f "LICENSE" ]; then
+        install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    elif [ -f "LICENSE.md" ]; then
+        install -Dm644 "LICENSE.md" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    elif [ -f "LICENSE-MIT" ]; then
+        install -Dm644 "LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    fi
 }
