@@ -405,7 +405,10 @@ fn install(a: PackageArgs) -> Result<(), String> {
             return Err(format!("Invalid package name: {p}"));
         }
     }
-    log(&format!("Install requested for packages: {}", a.packages.join(" ")));
+    log(&format!(
+        "Install requested for packages: {}",
+        a.packages.join(" ")
+    ));
 
     let mut official = Vec::new();
     let mut aur = Vec::new();
@@ -445,7 +448,10 @@ fn install(a: PackageArgs) -> Result<(), String> {
                         "Packages in transaction (requested + dependencies): {}",
                         txn.len()
                     ));
-                    info_msg(&format!("Estimated download size: {}", format_bytes(total_bytes)));
+                    info_msg(&format!(
+                        "Estimated download size: {}",
+                        format_bytes(total_bytes)
+                    ));
                     for (name, size) in &txn {
                         let marker = if official.contains(name) {
                             "requested"
@@ -480,13 +486,31 @@ fn install(a: PackageArgs) -> Result<(), String> {
         ));
 
         for p in &skip {
-            record("install", p, "installed", "skipped", "plan:already installed");
+            record(
+                "install",
+                p,
+                "installed",
+                "skipped",
+                "plan:already installed",
+            );
         }
         for p in &official {
-            record("install", p, "official", "planned", "plan:found in official repositories");
+            record(
+                "install",
+                p,
+                "official",
+                "planned",
+                "plan:found in official repositories",
+            );
         }
         for p in &aur {
-            record("install", p, "aur", "planned", "plan:not found in official repositories");
+            record(
+                "install",
+                p,
+                "aur",
+                "planned",
+                "plan:not found in official repositories",
+            );
         }
         println!();
         success("Plan completed (no changes applied)");
@@ -495,23 +519,44 @@ fn install(a: PackageArgs) -> Result<(), String> {
 
     // --- --dry-run: shallow simulation (just the commands that would run) ---
     if a.dry_run {
-        log(&format!("Install dry-run requested for packages: {}", a.packages.join(" ")));
+        log(&format!(
+            "Install dry-run requested for packages: {}",
+            a.packages.join(" ")
+        ));
         section("DRY-RUN: Execution Simulation");
         info_msg("No package changes will be applied");
 
         for p in &skip {
             warn(&format!("{p} -> already installed (skip)"));
-            record("install", p, "installed", "skipped", "dry-run:already installed");
+            record(
+                "install",
+                p,
+                "installed",
+                "skipped",
+                "dry-run:already installed",
+            );
         }
         for p in &official {
             info_msg(&format!("{p} -> would execute: sudo pacman -S {p}"));
-            record("install", p, "official", "planned", "dry-run:found in official repositories");
+            record(
+                "install",
+                p,
+                "official",
+                "planned",
+                "dry-run:found in official repositories",
+            );
         }
         for p in &aur {
             info_msg(&format!(
                 "{p} -> would execute: git clone https://aur.archlinux.org/{p}.git && makepkg -si --noconfirm"
             ));
-            record("install", p, "aur", "planned", "dry-run:not found in official repositories");
+            record(
+                "install",
+                p,
+                "aur",
+                "planned",
+                "dry-run:not found in official repositories",
+            );
         }
 
         println!();
@@ -553,7 +598,10 @@ fn install(a: PackageArgs) -> Result<(), String> {
 
     if !confirm(a.yes, "Proceed with installation?")? {
         info_msg("Operation cancelled");
-        log(&format!("Install cancelled by user for packages: {}", a.packages.join(" ")));
+        log(&format!(
+            "Install cancelled by user for packages: {}",
+            a.packages.join(" ")
+        ));
         for p in &official {
             record("install", p, "official", "cancelled", "user-cancel");
         }
@@ -569,8 +617,14 @@ fn install(a: PackageArgs) -> Result<(), String> {
     }
 
     if !official.is_empty() {
-        info_msg(&format!("Installing official packages: {}", official.join(" ")));
-        log(&format!("Executing batch install for official packages: {}", official.join(" ")));
+        info_msg(&format!(
+            "Installing official packages: {}",
+            official.join(" ")
+        ));
+        log(&format!(
+            "Executing batch install for official packages: {}",
+            official.join(" ")
+        ));
         let mut c = Command::new("pacman");
         c.args(["-S", "--needed"]).args(&official);
         if a.yes {
@@ -645,7 +699,10 @@ fn remove(a: PackageArgs) -> Result<(), String> {
             return Err(format!("Invalid package name: {p}"));
         }
     }
-    log(&format!("Remove requested for packages: {}", a.packages.join(" ")));
+    log(&format!(
+        "Remove requested for packages: {}",
+        a.packages.join(" ")
+    ));
 
     let mut targets = Vec::new();
     let mut missing = Vec::new();
@@ -686,16 +743,17 @@ fn remove(a: PackageArgs) -> Result<(), String> {
                 None => {
                     for p in &targets {
                         let out = Command::new("pacman").args(["-Qi", p]).output().ok();
-                        let size = out
-                            .and_then(|o| {
-                                String::from_utf8_lossy(&o.stdout)
-                                    .lines()
-                                    .find(|l| l.starts_with("Installed Size"))
-                                    .and_then(|l| l.split(':').nth(1).map(|s| s.trim().to_string()))
-                            });
+                        let size = out.and_then(|o| {
+                            String::from_utf8_lossy(&o.stdout)
+                                .lines()
+                                .find(|l| l.starts_with("Installed Size"))
+                                .and_then(|l| l.split(':').nth(1).map(|s| s.trim().to_string()))
+                        });
                         match size {
                             Some(s) => info_msg(&format!("Estimated freed size for {p}: {s}")),
-                            None => warn(&format!("Unable to simulate remove dependency tree for {p}")),
+                            None => warn(&format!(
+                                "Unable to simulate remove dependency tree for {p}"
+                            )),
                         }
                     }
                 }
@@ -703,7 +761,11 @@ fn remove(a: PackageArgs) -> Result<(), String> {
         }
 
         println!();
-        info_msg(&format!("Summary: remove={} skip={}", targets.len(), missing.len()));
+        info_msg(&format!(
+            "Summary: remove={} skip={}",
+            targets.len(),
+            missing.len()
+        ));
         for p in &targets {
             record("remove", p, "official", "planned", "plan:installed package");
         }
@@ -719,7 +781,10 @@ fn remove(a: PackageArgs) -> Result<(), String> {
         section("DRY-RUN: Execution Simulation");
         info_msg("No package changes will be applied");
         if !targets.is_empty() {
-            info_msg(&format!("Would execute: sudo pacman -Rns {}", targets.join(" ")));
+            info_msg(&format!(
+                "Would execute: sudo pacman -Rns {}",
+                targets.join(" ")
+            ));
         }
         for p in &missing {
             warn(&format!("{p} -> already absent (skip)"));
@@ -727,7 +792,13 @@ fn remove(a: PackageArgs) -> Result<(), String> {
         }
         for p in &targets {
             info_msg(&format!("{p} -> would execute: sudo pacman -Rns {p}"));
-            record("remove", p, "official", "planned", "dry-run:installed package");
+            record(
+                "remove",
+                p,
+                "official",
+                "planned",
+                "dry-run:installed package",
+            );
         }
         println!();
         info_msg(&format!(
@@ -752,7 +823,11 @@ fn remove(a: PackageArgs) -> Result<(), String> {
 
     section("Execution Plan");
     info_msg(&format!("Targets: {}", targets.join(" ")));
-    info_msg(&format!("Summary: remove={} skip={}", targets.len(), missing.len()));
+    info_msg(&format!(
+        "Summary: remove={} skip={}",
+        targets.len(),
+        missing.len()
+    ));
     for p in &missing {
         record("remove", p, "official", "skipped", "not-installed");
     }
@@ -764,13 +839,19 @@ fn remove(a: PackageArgs) -> Result<(), String> {
         for p in &targets {
             record("remove", p, "official", "cancelled", "user-cancel");
         }
-        log(&format!("Remove cancelled by user for packages: {}", a.packages.join(" ")));
+        log(&format!(
+            "Remove cancelled by user for packages: {}",
+            a.packages.join(" ")
+        ));
         info_msg("Operation cancelled");
         return Ok(());
     }
 
     info_msg(&format!("Removing: {}", targets.join(" ")));
-    log(&format!("Remove requested for packages: {}", targets.join(" ")));
+    log(&format!(
+        "Remove requested for packages: {}",
+        targets.join(" ")
+    ));
     println!();
 
     let mut c = Command::new("pacman");
@@ -784,7 +865,10 @@ fn remove(a: PackageArgs) -> Result<(), String> {
         for p in &targets {
             record("remove", p, "official", "failed", "pacman-remove");
         }
-        log(&format!("Remove failed for packages: {}", targets.join(" ")));
+        log(&format!(
+            "Remove failed for packages: {}",
+            targets.join(" ")
+        ));
         return Err("Remove failed".into());
     }
     for p in targets {
@@ -1093,16 +1177,25 @@ fn doctor() -> Result<(), String> {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("atha");
     if path_writable(&cache_dir) {
-        success(&format!("Cache directory writable: {}", cache_dir.display()));
+        success(&format!(
+            "Cache directory writable: {}",
+            cache_dir.display()
+        ));
     } else {
-        warn(&format!("Cache directory not writable: {}", cache_dir.display()));
+        warn(&format!(
+            "Cache directory not writable: {}",
+            cache_dir.display()
+        ));
         warnings += 1;
     }
     let state = state_dir();
     if path_writable(&state) {
         success(&format!("State directory writable: {}", state.display()));
     } else {
-        warn(&format!("State directory not writable: {}", state.display()));
+        warn(&format!(
+            "State directory not writable: {}",
+            state.display()
+        ));
         warnings += 1;
     }
 
