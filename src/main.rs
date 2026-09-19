@@ -547,9 +547,15 @@ fn install(a: PackageArgs) -> Result<(), String> {
             );
         }
         for p in &aur {
-            info_msg(&format!(
-                "{p} -> would execute: git clone https://aur.archlinux.org/{p}.git && makepkg -si --noconfirm"
-            ));
+            if a.yes {
+                info_msg(&format!(
+                    "{p} -> would execute: git clone https://aur.archlinux.org/{p}.git && makepkg -si --noconfirm"
+                ));
+            } else {
+                info_msg(&format!(
+                    "{p} -> would execute: git clone https://aur.archlinux.org/{p}.git && makepkg -si"
+                ));
+            }
             record(
                 "install",
                 p,
@@ -670,11 +676,12 @@ fn install(a: PackageArgs) -> Result<(), String> {
                 record("install", &p, "aur", "failed", "git clone failed");
                 return Err(format!("Failed to clone AUR package: {p}"));
             }
-            let out = Command::new("makepkg")
-                .args(["-si", "--noconfirm"])
-                .current_dir(&dir)
-                .output()
-                .map_err(|e| e.to_string())?;
+            let mut mk = Command::new("makepkg");
+            mk.arg("-si");
+            if a.yes {
+                mk.arg("--noconfirm");
+            }
+            let out = mk.current_dir(&dir).output().map_err(|e| e.to_string())?;
             if !out.status.success() {
                 record("install", &p, "aur", "failed", "makepkg");
                 return Err(format!("Failed install {p}"));
@@ -1292,4 +1299,4 @@ fn summary(rows: &[Vec<&str>], idx: usize) {
     for (k, v) in m {
         println!("  - {k}: {v}")
     }
-}   
+}
