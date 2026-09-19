@@ -28,7 +28,12 @@ jobs:
       - name: Cache Cargo registry & build
         uses: Swatinem/rust-cache@v2
 
-      - name: Check and test
+      # cargo test menjalankan unit test murni di src/main.rs (mod tests):
+      # validasi nama paket, format_bytes, BuildDirGuard cleanup-on-drop, dll.
+      # Ini jalan di ubuntu-latest tanpa pacman, jadi hanya mencakup logika
+      # yang tidak menyentuh pacman/jaringan — sisanya diuji di job
+      # qa-advanced-enterprise di bawah, yang punya pacman sungguhan.
+      - name: Check, Format & Unit Test
         run: |
           set -euo pipefail
           cargo fmt --all -- --check
@@ -36,18 +41,17 @@ jobs:
           cargo test --all-targets
 
   qa-advanced-enterprise:
-    name: QA Advanced Enterprise Test (AUR Helper & Safety Layer)
+    name: QA Advanced Enterprise Test (Full Feature Parity, AUR Helper & Safety Layer)
     needs: lint-and-test
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     container:
       image: archlinux:latest
     env:
       # CARGO_HOME/CARGO_TARGET_DIR dibuat di /tmp dan dipakai bersama oleh root
-      # maupun user "builder" (lihat step "Setup Non-Root Builder User"), sehingga
-      # dependency crate yang sudah didownload/dicompile pada build pertama
-      # (cargo build --release) langsung dipakai ulang saat makepkg menjalankan
-      # cargo build-nya sendiri. Ini menghilangkan kompilasi dependency dua kali.
+      # maupun user "builder", sehingga dependency crate yang sudah
+      # didownload/dicompile pada build pertama (cargo build --release)
+      # langsung dipakai ulang saat makepkg menjalankan cargo build-nya sendiri.
       CARGO_HOME: /tmp/cargo-home
       CARGO_TARGET_DIR: /tmp/cargo-target
 
@@ -55,9 +59,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Cache paket pacman (base-devel, git, curl, wget, sudo, yajl) supaya
-      # tidak didownload ulang dari mirror setiap run. Key mengikuti daftar
-      # paket + tanggal(minggu) agar cache tetap segar.
       - name: Cache pacman packages
         uses: actions/cache@v4
         with:
@@ -69,10 +70,10 @@ jobs:
       - name: Install System Dependencies
         run: |
           set -euo pipefail
-          # "go" dihapus dari daftar: yay sekarang diinstal dari paket rilis
-          # .pkg.tar.zst yang sudah dikompilasi (lihat step AUR Helper), jadi
-          # toolchain Go untuk build yay dari source tidak lagi dibutuhkan.
-          pacman -Sy --noconfirm --needed base-devel rustup git curl wget sudo yajl
+          # pacman-contrib ditambahkan supaya `checkupdates` tersedia — tanpa
+          # ini, `atha update --plan/--dry-run` selalu jatuh ke fallback
+          # `pacman -Qu` dan jalur utamanya (checkupdates) tidak pernah teruji.
+          pacman -Sy --noconfirm --needed base-devel rustup git curl wget sudo yajl pacman-contrib
 
       - name: Configure Rust toolchain
         run: |
@@ -81,9 +82,6 @@ jobs:
           chmod -R 0777 "$CARGO_HOME" "$CARGO_TARGET_DIR"
           rustup default stable
 
-      # Cache dependency Cargo (bukan hasil build) berdasarkan Cargo.lock, agar
-      # `cargo build --release` maupun build internal makepkg tidak mendownload
-      # ulang crates.io index & sources dari nol tiap run.
       - name: Cache Cargo dependencies (shared CARGO_HOME)
         uses: actions/cache@v4
         with:
@@ -99,13 +97,10 @@ jobs:
         run: |
           set -euo pipefail
           useradd -m builder
-          # Tidak perlu "passwd -d builder": `su - builder` yang dijalankan
-          # sebagai root tidak memerlukan password target user, jadi men-set
-          # password kosong hanya menambah attack surface tanpa manfaat.
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           chown -R builder:builder /__w/Atha/Atha "$CARGO_HOME" "$CARGO_TARGET_DIR"
 
-      # --- TAHAP 1: MULTI-VECTOR INSTALLATION ---
+      # --- TAHAP 1: MULTI-VECTOR INSTALLATION (5 vektor) ---
       - name: QA Test All Installation Methods
         run: |
           set -euo pipefail
@@ -113,29 +108,33 @@ jobs:
           echo "[QA] Starting Multi-Vector Installation Testing"
           echo "===================================================="
 
-          # Method 1 & 2: Source & Binary.
-          # --locked: gagal cepat & deterministik kalau Cargo.lock tidak sinkron,
-          # daripada diam-diam resolve ulang dependency (lebih lambat & tidak reproducible).
+          # Method 1: Source build
           su - builder -c "export PATH=\$HOME/.cargo/bin:\$PATH CARGO_HOME=$CARGO_HOME CARGO_TARGET_DIR=$CARGO_TARGET_DIR && rustup default stable && cd /__w/Atha/Atha && cargo build --release --locked"
           sudo install -Dm755 "$CARGO_TARGET_DIR/release/atha" /usr/local/bin/atha
+
+          # Method 2: Local binary install
           atha --version
 
-          # Method 3: curl / wget simulation
+          # Method 3: curl simulation
           mkdir -p /tmp/mock-releases/v3.1.1/
           cp "$CARGO_TARGET_DIR/release/atha" /tmp/mock-releases/v3.1.1/atha-x86_64-linux
           curl -sLo /usr/local/bin/atha-curl "file:///tmp/mock-releases/v3.1.1/atha-x86_64-linux"
           chmod +x /usr/local/bin/atha-curl
           atha-curl --version
 
-          # Method 4: makepkg (PKGBUILD). Karena CARGO_HOME/CARGO_TARGET_DIR sudah
-          # berisi dependency & artifact dari build di atas, cargo build di dalam
-          # makepkg seharusnya hanya perlu relink binary atha, bukan compile ulang
-          # seluruh dependency tree.
+          # Method 3b: wget simulation
+          wget -qO /usr/local/bin/atha-wget /tmp/mock-releases/v3.1.1/atha-x86_64-linux
+          chmod +x /usr/local/bin/atha-wget
+          atha-wget --version
+
+          # Method 4/5: makepkg (PKGBUILD) — juga memvalidasi source/checksum/
+          # license install di PKGBUILD sungguhan
           su - builder -c "export CARGO_HOME=$CARGO_HOME CARGO_TARGET_DIR=$CARGO_TARGET_DIR && cd /__w/Atha/Atha && makepkg -si --noconfirm"
+          pacman -Qi atha
 
-          echo "[QA] All basic installation vectors passed!"
+          echo "[QA] All installation vectors passed!"
 
-      # --- TAHAP 2: PACKAGING QA & DISTRIBUTION VALIDATION ---
+      # --- TAHAP 2: PACKAGING QA & DISTRIBUTION VALIDATION (NAMCAP) ---
       - name: QA Validate Package with Namcap & Lint
         run: |
           set -euo pipefail
@@ -143,27 +142,17 @@ jobs:
           echo "[QA] Starting Packaging & Distribution Validation (Namcap)"
           echo "===================================================="
 
-          # Install namcap untuk audit kualitas paket Arch Linux
           pacman -Sy --noconfirm --needed namcap
-
-          # Cari file paket hasil makepkg (.pkg.tar.zst) di direktori kerja
-          PKG_FILE=$(find /__w/Atha/Atha -name "atha-*.pkg.tar.zst" | head -n1)
+          PKG_FILE=$(find /__w/Atha/Atha -name "atha-*.pkg.tar.zst" ! -name "*-debug-*" | head -n1)
 
           if [ -f "$PKG_FILE" ]; then
             echo "[QA] Found built package: $PKG_FILE"
 
-            # PENTING (bug #2, ditemukan Greptile): dengan `set -e` aktif di step
-            # ini, pola  `output="$(namcap ...)"; rc=$?`  TIDAK AMAN — namcap
-            # SELALU exit non-zero kalau ada temuan apa pun (termasuk W: yang
-            # non-fatal), dan `set -e` akan langsung menghentikan script tepat
-            # di baris assignment tersebut, SEBELUM baris `rc=$?` sempat
-            # dieksekusi. Akibatnya CI mati mendadak untuk warning biasa,
-            # bukan cuma untuk error sungguhan.
-            #
-            # Fix: gunakan `cmd || rc=$?` — bentuk `A || B` ini aman di bawah
-            # `set -e` selama command gabungannya sendiri berakhir sukses
-            # (di sini B = assignment sederhana yang selalu sukses), jadi
-            # errexit tidak terpicu walau A (namcap) gagal.
+            # PENTING: dengan `set -e` aktif, `var="$(cmd)"; rc=$?` TIDAK aman
+            # karena namcap selalu exit non-zero untuk temuan apa pun
+            # (termasuk W: non-fatal) — errexit akan memutus script tepat di
+            # baris assignment, sebelum `rc=$?` sempat jalan. Pola
+            # `cmd || rc=$?` di bawah ini aman di bawah `set -e`.
 
             echo "[QA] Running PKGBUILD lint check..."
             namcap_pkgbuild_rc=0
@@ -193,12 +182,152 @@ jobs:
             fi
             echo "[QA] Namcap package notices above (if any) are warnings only (non-fatal)."
           else
-            echo "[QA] Warning: Package file not found for namcap inspection."
+            echo "[QA] Package file not found for namcap inspection — failing CI (packaging step is supposed to produce one)."
+            exit 1
           fi
 
           echo "[QA] Packaging QA validation completed successfully!"
 
-      # --- TAHAP 3: AUR HELPER (YAY) WORKFLOW INTEGRATION TEST ---
+      # --- TAHAP 3: FULL CLI FEATURE & REGRESSION TEST SUITE ---
+      # Setiap perintah di bawah benar-benar di-assert hasilnya (bukan cuma
+      # dijalankan lalu diabaikan dengan `|| true`), termasuk verifikasi
+      # eksplisit untuk regresi yang pernah diperbaiki di issue #14.
+      - name: QA Test All CLI Commands, Modes & Known Regressions
+        run: |
+          set -uo pipefail   # tanpa -e: assertion helper di bawah yang menentukan pass/fail
+          echo "===================================================="
+          echo "[QA] Full CLI Feature & Regression Test Suite"
+          echo "===================================================="
+
+          FAILED=0
+
+          assert_success() {
+            local desc="$1"; shift
+            if "$@" > /tmp/assert_out.log 2>&1; then
+              echo "[PASS] $desc"
+            else
+              echo "[FAIL] $desc (exit=$?)"
+              cat /tmp/assert_out.log
+              FAILED=1
+            fi
+          }
+
+          assert_failure() {
+            local desc="$1"; shift
+            if "$@" > /tmp/assert_out.log 2>&1; then
+              echo "[FAIL] $desc (seharusnya gagal, tapi sukses)"
+              cat /tmp/assert_out.log
+              FAILED=1
+            else
+              echo "[PASS] $desc (gagal seperti yang diharapkan)"
+            fi
+          }
+
+          assert_exit_code() {
+            local desc="$1" expected="$2"; shift 2
+            "$@" > /tmp/assert_out.log 2>&1
+            local rc=$?
+            if [ "$rc" -eq "$expected" ]; then
+              echo "[PASS] $desc (exit=$rc)"
+            else
+              echo "[FAIL] $desc (expected exit=$expected, got=$rc)"
+              cat /tmp/assert_out.log
+              FAILED=1
+            fi
+          }
+
+          # --- Perintah dasar ---
+          assert_success "atha --version" atha --version
+          assert_success "atha --help" atha --help
+          assert_success "atha (tanpa argumen, cetak HELP)" atha
+
+          # --- doctor ---
+          assert_success "atha doctor" atha doctor
+
+          # --- list: 4 varian ---
+          assert_success "atha list installed" atha list installed
+          assert_success "atha list explicit" atha list explicit
+          assert_success "atha list aur" atha list aur
+          assert_success "atha list all --limit 5" atha list all --limit 5
+
+          # Regresi issue #14 poin 2: --limit HANYA berlaku untuk "all".
+          full_count=$(pacman -Q | wc -l)
+          atha_count=$(atha list installed --limit 1 | wc -l)
+          if [ "$atha_count" -lt "$full_count" ]; then
+            echo "[FAIL] 'list installed --limit 1' terpotong (dapat $atha_count baris, seharusnya $full_count) — regresi issue #14 poin 2!"
+            FAILED=1
+          else
+            echo "[PASS] 'list installed --limit' diabaikan sesuai desain ($atha_count baris)"
+          fi
+          all_lines=$(atha list all --limit 3 | wc -l)
+          if [ "$all_lines" -gt 6 ]; then
+            echo "[FAIL] 'list all --limit 3' seharusnya dipotong pendek, dapat $all_lines baris"
+            FAILED=1
+          else
+            echo "[PASS] 'list all --limit' membatasi output ($all_lines baris)"
+          fi
+
+          # --- info & search ---
+          assert_success "atha info pacman" atha info pacman
+          assert_failure "atha info dengan nama tidak valid ditolak" atha info 'bad name!'
+          assert_success "atha search curl" atha search curl
+
+          # --- install/remove/update: --plan & --dry-run ---
+          assert_success "atha install --plan pacman" atha install --plan pacman
+          assert_success "atha install --dry-run pacman" atha install --dry-run pacman
+          assert_success "atha remove --plan non-existent-pkg-xyz" atha remove --plan non-existent-pkg-xyz
+          assert_success "atha remove --dry-run non-existent-pkg-xyz" atha remove --dry-run non-existent-pkg-xyz
+          assert_success "atha update --plan" atha update --plan
+          assert_success "atha update --dry-run" atha update --dry-run
+
+          # Regresi issue #14 poin 1: membatalkan konfirmasi = exit 0, BUKAN error.
+          echo "n" | atha remove pacman > /tmp/cancel_out.log 2>&1
+          cancel_rc=$?
+          if [ "$cancel_rc" -ne 0 ]; then
+            echo "[FAIL] Membatalkan konfirmasi seharusnya exit 0, dapat exit=$cancel_rc — regresi issue #14 poin 1!"
+            cat /tmp/cancel_out.log
+            FAILED=1
+          elif ! grep -q "Operation cancelled" /tmp/cancel_out.log; then
+            echo "[FAIL] Pesan 'Operation cancelled' tidak ditemukan setelah membatalkan"
+            FAILED=1
+          else
+            echo "[PASS] Membatalkan konfirmasi exit 0 secara graceful (issue #14 poin 1 terverifikasi)"
+          fi
+
+          # --- Real execution round-trip (bukan cuma --plan/--dry-run) ---
+          # "tree" dipakai sebagai paket kecil & aman untuk uji instal+hapus
+          # sungguhan lewat --yes, karena tidak ikut terpasang oleh dependency
+          # manapun di atas.
+          assert_success "atha install --yes tree (eksekusi nyata)" atha install --yes tree
+          assert_success "'tree' benar-benar terpasang via pacman" pacman -Qi tree
+          assert_success "atha remove --yes tree (eksekusi nyata)" atha remove --yes tree
+          assert_failure "'tree' benar-benar terhapus via pacman" pacman -Qi tree
+
+          # --- history: semua mode tampilan + filter ---
+          assert_success "atha history --limit 5" atha history --limit 5
+          assert_success "atha history --full --limit 5" atha history --full --limit 5
+          assert_success "atha history --timeline --limit 5" atha history --timeline --limit 5
+          assert_success "atha history --summary" atha history --summary
+          assert_success "atha history --action install --limit 5" atha history --action install --limit 5
+          assert_success "atha history --status success --limit 5" atha history --status success --limit 5
+
+          # --- NO_COLOR harus benar-benar polos tanpa escape code ---
+          if NO_COLOR=1 atha list installed | head -1 | grep -qP '\x1b'; then
+            echo "[FAIL] NO_COLOR=1 tapi output masih mengandung ANSI escape code"
+            FAILED=1
+          else
+            echo "[PASS] NO_COLOR=1 menghasilkan output polos tanpa escape code"
+          fi
+
+          echo "===================================================="
+          if [ "$FAILED" -ne 0 ]; then
+            echo "[QA] SATU ATAU LEBIH TEST GAGAL — lihat [FAIL] di atas."
+            exit 1
+          fi
+          echo "[QA] SUCCESS: Semua fitur CLI & regression check lolos!"
+          echo "===================================================="
+
+      # --- TAHAP 4: AUR HELPER (YAY) WORKFLOW INTEGRATION TEST ---
       - name: QA Test AUR Helper Integration (yay)
         run: |
           set -uo pipefail
@@ -206,7 +335,6 @@ jobs:
           echo "[QA] Testing AUR Helper (yay) Compatibility"
           echo "===================================================="
 
-          # Coba unduh binary yay dari rilis resminya dengan aman
           YAY_URL=$(curl -sL https://api.github.com/repos/Jguer/yay/releases/latest 2>/dev/null \
             | grep -o '"browser_download_url": *"[^"]*x86_64\.pkg\.tar\.zst"' \
             | head -n1 | cut -d'"' -f4 || true)
@@ -219,7 +347,6 @@ jobs:
             fi
           fi
 
-          # Verifikasi keberadaan yay, jika gagal kita berikan catatan tanpa membuat seluruh CI gagal
           if command -v yay &> /dev/null; then
             echo "[QA] yay is installed successfully. Testing package query..."
             yay -Qi atha || echo "[QA] Note: atha is installed via local makepkg, verifying registry..."
@@ -227,31 +354,23 @@ jobs:
             echo "[QA] Notice: yay binary not installed, skipping auxiliary helper check gracefully."
           fi
 
-      # --- TAHAP 4: SAFETY LAYER & EDGE CASES TESTING ---
+      # --- TAHAP 5: SAFETY LAYER & EDGE CASES TESTING ---
       - name: QA Test Safety Layer & Edge Cases
         run: |
-          set -uo pipefail   # tanpa -e: kegagalan tiap sub-test ditangani manual di bawah
+          set -uo pipefail
           echo "===================================================="
-          echo "[QA] Testing Safety Layer (--dry-run, --plan, & Lock Handling)"
+          echo "[QA] Testing Safety Layer (Lock Handling)"
           echo "===================================================="
 
-          echo "[Safety Test 1] Testing install --dry-run..."
-          atha install --dry-run pacman || echo "[Safety Test 1] Handled gracefully"
-
-          echo "[Safety Test 2] Testing remove --plan..."
-          atha remove --plan non-existent-pkg || echo "[Safety Test 2] Handled gracefully"
-
-          echo "[Safety Test 3] Testing update --dry-run..."
-          atha update --dry-run || echo "[Safety Test 3] Handled gracefully"
-
-          echo "[Safety Test 4] Testing behavior under simulated pacman db.lck..."
-          # trap memastikan db.lck SELALU dibersihkan, walaupun `atha doctor`
-          # crash tak terduga — sebelumnya rm hanya jalan kalau baris di atasnya
-          # selesai normal.
           trap 'rm -f /var/lib/pacman/db.lck' EXIT
           touch /var/lib/pacman/db.lck
           atha doctor || true
+          if [ -f /var/lib/pacman/db.lck ]; then
+            echo "[FAIL] db.lck masih ada setelah atha doctor — trap cleanup tidak jalan?"
+            exit 1
+          fi
+          echo "[PASS] db.lck ditangani dengan baik dan dibersihkan"
 
           echo "===================================================="
-          echo "[QA] SUCCESS: Advanced Enterprise QA Suite Passed!"
+          echo "[QA] SUCCESS: Comprehensive Enterprise QA Suite Passed!"
           echo "===================================================="
