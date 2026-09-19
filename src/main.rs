@@ -1292,4 +1292,4 @@ fn summary(rows: &[Vec<&str>], idx: usize) {
     for (k, v) in m {
         println!("  - {k}: {v}")
     }
-}
+}   
