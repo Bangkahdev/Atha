@@ -151,12 +151,14 @@ atha --help
 
 ## Documentation
 
-* [Wiki Home](https://www.google.com/search?q=wiki/Home.md)
-* [Installation Guide](https://www.google.com/search?q=wiki/Installation.md)
-* [Command Reference](https://www.google.com/search?q=wiki/Commands.md)
-* [Troubleshooting](https://www.google.com/search?q=wiki/Troubleshooting.md)
-* [Release Notes](https://www.google.com/search?q=wiki/Release-Notes.md)
-* [Brand Guidelines](https://www.google.com/search?q=wiki/Brand-Guidelines.md)
+* [Wiki Home](wiki/Home.md)
+* [Installation Guide](wiki/Installation.md)
+* [Command Reference](wiki/Commands.md)
+* [Troubleshooting](wiki/Troubleshooting.md)
+* [Release Notes](wiki/Release-Notes.md)
+* [Brand Guidelines](wiki/Brand-Guidelines.md)
+* [AUR Reviewer Response](wiki/AUR-Reviewer-Response.md)
+* [User Feedback Loop](wiki/User-Feedback-Loop.md)
 
 ## Project Links & Maintainer
 
