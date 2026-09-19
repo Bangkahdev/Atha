@@ -1300,3 +1300,143 @@ fn summary(rows: &[Vec<&str>], idx: usize) {
         println!("  - {k}: {v}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Sejumlah test di bawah membaca/menulis environment variable proses
+    // (NO_COLOR, ATHA_STATE_DIR, ATHA_LOG_FILE). Env var adalah status
+    // global per-proses, dan `cargo test` menjalankan test secara paralel
+    // di satu proses yang sama secara default — tanpa penguncian ini,
+    // test-test tersebut bisa saling menimpa env var satu sama lain dan
+    // hasilnya jadi flaky. Mutex ini memaksa test yang menyentuh env var
+    // berjalan bergantian, bukan bersamaan.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    // --- valid_pkg(): validasi nama paket, garis pertahanan pertama
+    //     sebelum nama paket dipakai untuk membangun command shell. ---
+    #[test]
+    fn valid_pkg_accepts_typical_arch_package_names() {
+        assert!(valid_pkg("pacman"));
+        assert!(valid_pkg("python-requests"));
+        assert!(valid_pkg("lib32-glibc"));
+        assert!(valid_pkg("gcc-libs+"));
+        assert!(valid_pkg("a"));
+        assert!(valid_pkg("pkg@1.2.3"));
+    }
+
+    #[test]
+    fn valid_pkg_rejects_empty_and_shell_metacharacters() {
+        assert!(!valid_pkg(""));
+        assert!(!valid_pkg("pkg; rm -rf /"));
+        assert!(!valid_pkg("pkg name"));
+        assert!(!valid_pkg("pkg$(whoami)"));
+        assert!(!valid_pkg("../etc/passwd"));
+        assert!(!valid_pkg("pkg|cat"));
+        assert!(!valid_pkg("pkg`id`"));
+        assert!(!valid_pkg("pkg&&ls"));
+    }
+
+    // --- format_bytes(): dipakai di preview --plan (estimasi ukuran
+    //     download/freed space), harus konsisten dengan format_bytes()
+    //     versi shell (B/KiB/MiB/GiB/TiB, 2 desimal kecuali B). ---
+    #[test]
+    fn format_bytes_boundaries() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.00 KiB");
+        assert_eq!(format_bytes(1536), "1.50 KiB");
+        assert_eq!(format_bytes(1024 * 1024), "1.00 MiB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.00 GiB");
+        assert_eq!(format_bytes(1024u64.pow(4)), "1.00 TiB");
+        // TiB adalah unit terbesar — tidak boleh overflow ke unit ke-5
+        // yang tidak ada (mis. "PiB").
+        assert_eq!(format_bytes(1024u64.pow(5)), "1024.00 TiB");
+    }
+
+    #[test]
+    fn list_type_labels_match_cli_values() {
+        assert_eq!(ListType::Installed.label(), "installed");
+        assert_eq!(ListType::Explicit.label(), "explicit");
+        assert_eq!(ListType::Aur.label(), "aur");
+        assert_eq!(ListType::All.label(), "all");
+    }
+
+    // --- color(): harus benar-benar polos (tanpa escape code) saat
+    //     NO_COLOR di-set, dan tetap berwarna kalau tidak. ---
+    #[test]
+    fn color_respects_no_color_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("NO_COLOR", "1");
+        assert_eq!(color("1;34", "hello"), "hello");
+        std::env::remove_var("NO_COLOR");
+        let colored = color("1;34", "hello");
+        assert_ne!(colored, "hello");
+        assert!(colored.contains("hello"));
+    }
+
+    // --- state_dir()/log_path(): urutan prioritas override lewat env var,
+    //     dipakai oleh doctor/history/log() untuk lokasi file. ---
+    #[test]
+    fn state_dir_respects_atha_state_dir_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("ATHA_STATE_DIR", "/tmp/atha-test-state-dir");
+        assert_eq!(state_dir(), PathBuf::from("/tmp/atha-test-state-dir"));
+        std::env::remove_var("ATHA_STATE_DIR");
+    }
+
+    #[test]
+    fn log_path_respects_atha_log_file_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("ATHA_LOG_FILE", "/tmp/atha-test.log");
+        assert_eq!(log_path(), PathBuf::from("/tmp/atha-test.log"));
+        std::env::remove_var("ATHA_LOG_FILE");
+    }
+
+    // --- path_writable(): dipakai doctor() untuk cek cache/state dir
+    //     tanpa efek samping mem-buat direktori target. ---
+    #[test]
+    fn path_writable_true_for_existing_writable_dir() {
+        let dir = std::env::temp_dir().join(format!("atha-writable-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(path_writable(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn path_writable_false_for_nonexistent_parent() {
+        let bogus = PathBuf::from("/this/path/should/not/exist/at/all/atha-test-probe");
+        assert!(!path_writable(&bogus));
+    }
+
+    // --- BuildDirGuard: ini yang menutup celah issue #14 poin 7 (build dir
+    //     AUR bisa nyangkut kalau ada early-return). Test ini memastikan
+    //     direktori benar-benar hilang begitu guard keluar scope. ---
+    #[test]
+    fn build_dir_guard_removes_directory_on_drop() {
+        let dir = std::env::temp_dir().join(format!("atha-guard-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(dir.exists());
+        {
+            let _guard = BuildDirGuard(dir.clone());
+            assert!(dir.exists(), "direktori harus masih ada selama guard hidup");
+        } // guard di-drop di sini
+        assert!(
+            !dir.exists(),
+            "BuildDirGuard harus menghapus direktori saat di-drop"
+        );
+    }
+
+    #[test]
+    fn build_dir_guard_is_noop_if_already_removed() {
+        let dir = std::env::temp_dir().join(format!("atha-guard-test2-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        // Drop guard pada direktori yang sudah tidak ada tidak boleh panic.
+        let guard = BuildDirGuard(dir);
+        drop(guard);
+    }
+}
