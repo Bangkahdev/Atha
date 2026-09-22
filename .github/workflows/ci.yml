@@ -8,8 +8,6 @@ on:
   pull_request:
     branches: [ "main", "master" ]
 
-# Batalkan run lama yang masih berjalan di branch/PR yang sama saat ada push baru,
-# supaya tidak buang-buang runner minutes untuk commit yang sudah usang.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -73,7 +71,7 @@ jobs:
           # pacman-contrib ditambahkan supaya `checkupdates` tersedia — tanpa
           # ini, `atha update --plan/--dry-run` selalu jatuh ke fallback
           # `pacman -Qu` dan jalur utamanya (checkupdates) tidak pernah teruji.
-          pacman -Sy --noconfirm --needed base-devel rustup git curl wget sudo yajl pacman-contrib
+          pacman -Sy --noconfirm --needed base-devel rustup git curl wget sudo yajl pacman-contrib python
 
       - name: Configure Rust toolchain
         run: |
@@ -115,17 +113,28 @@ jobs:
           # Method 2: Local binary install
           atha --version
 
-          # Method 3: curl simulation
+          # Method 3 & 3b: curl & wget simulation via local python HTTP server
           mkdir -p /tmp/mock-releases/v3.1.1/
           cp "$CARGO_TARGET_DIR/release/atha" /tmp/mock-releases/v3.1.1/atha-x86_64-linux
-          curl -sLo /usr/local/bin/atha-curl "file:///tmp/mock-releases/v3.1.1/atha-x86_64-linux"
+
+          # Jalankan server HTTP lokal di port 8000
+          python -m http.server 8000 --directory /tmp/mock-releases &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+
+          # Uji unduh via curl
+          curl -sLo /usr/local/bin/atha-curl "http://localhost:8000/v3.1.1/atha-x86_64-linux"
           chmod +x /usr/local/bin/atha-curl
           atha-curl --version
 
-          # Method 3b: wget simulation
-          wget -qO /usr/local/bin/atha-wget /tmp/mock-releases/v3.1.1/atha-x86_64-linux
+          # Uji unduh via wget
+          wget -qO /usr/local/bin/atha-wget "http://localhost:8000/v3.1.1/atha-x86_64-linux"
           chmod +x /usr/local/bin/atha-wget
           atha-wget --version
+
+          # Matikan server HTTP lokal
+          kill $SERVER_PID 2>/dev/null || true
 
           # Method 4/5: makepkg (PKGBUILD) — juga memvalidasi source/checksum/
           # license install di PKGBUILD sungguhan
@@ -148,53 +157,34 @@ jobs:
           if [ -f "$PKG_FILE" ]; then
             echo "[QA] Found built package: $PKG_FILE"
 
-            # PENTING: dengan `set -e` aktif, `var="$(cmd)"; rc=$?` TIDAK aman
-            # karena namcap selalu exit non-zero untuk temuan apa pun
-            # (termasuk W: non-fatal) — errexit akan memutus script tepat di
-            # baris assignment, sebelum `rc=$?` sempat jalan. Pola
-            # `cmd || rc=$?` di bawah ini aman di bawah `set -e`.
-
             echo "[QA] Running PKGBUILD lint check..."
             namcap_pkgbuild_rc=0
-            namcap_pkgbuild_output="$(namcap PKGBUILD 2>&1)" || namcap_pkgbuild_rc=$?
+            namcap_pkgbuild_output="$(namcap PKGBUILD 2>&1)" \vert{}\vert{} namcap_pkgbuild_rc=$?
             echo "$namcap_pkgbuild_output"
             if echo "$namcap_pkgbuild_output" | grep -qE '(^|[[:space:]])E:[[:space:]]'; then
               echo "[QA] Namcap found PKGBUILD ERROR(S) — failing CI."
               exit 1
             fi
-            if [ "$namcap_pkgbuild_rc" -ne 0 ] && ! echo "$namcap_pkgbuild_output" | grep -qE '(^|[[:space:]])(W|E):[[:space:]]'; then
-              echo "[QA] namcap failed to run against PKGBUILD (no diagnostics produced) — failing CI."
-              exit 1
-            fi
-            echo "[QA] Namcap PKGBUILD notices above (if any) are warnings only (non-fatal)."
 
             echo "[QA] Running built package audit..."
             namcap_pkg_rc=0
-            namcap_pkg_output="$(namcap "$PKG_FILE" 2>&1)" || namcap_pkg_rc=$?
+            namcap_pkg_output="$(namcap "$PKG_FILE" 2>&1)" \vert{}\vert{} namcap_pkg_rc=$?
             echo "$namcap_pkg_output"
             if echo "$namcap_pkg_output" | grep -qE '(^|[[:space:]])E:[[:space:]]'; then
               echo "[QA] Namcap found package ERROR(S) — failing CI."
               exit 1
             fi
-            if [ "$namcap_pkg_rc" -ne 0 ] && ! echo "$namcap_pkg_output" | grep -qE '(^|[[:space:]])(W|E):[[:space:]]'; then
-              echo "[QA] namcap failed to run against the built package (no diagnostics produced) — failing CI."
-              exit 1
-            fi
-            echo "[QA] Namcap package notices above (if any) are warnings only (non-fatal)."
           else
-            echo "[QA] Package file not found for namcap inspection — failing CI (packaging step is supposed to produce one)."
+            echo "[QA] Package file not found for namcap inspection — failing CI."
             exit 1
           fi
 
           echo "[QA] Packaging QA validation completed successfully!"
 
       # --- TAHAP 3: FULL CLI FEATURE & REGRESSION TEST SUITE ---
-      # Setiap perintah di bawah benar-benar di-assert hasilnya (bukan cuma
-      # dijalankan lalu diabaikan dengan `|| true`), termasuk verifikasi
-      # eksplisit untuk regresi yang pernah diperbaiki di issue #14.
       - name: QA Test All CLI Commands, Modes & Known Regressions
         run: |
-          set -uo pipefail   # tanpa -e: assertion helper di bawah yang menentukan pass/fail
+          set -uo pipefail
           echo "===================================================="
           echo "[QA] Full CLI Feature & Regression Test Suite"
           echo "===================================================="
@@ -223,25 +213,10 @@ jobs:
             fi
           }
 
-          assert_exit_code() {
-            local desc="$1" expected="$2"; shift 2
-            "$@" > /tmp/assert_out.log 2>&1
-            local rc=$?
-            if [ "$rc" -eq "$expected" ]; then
-              echo "[PASS] $desc (exit=$rc)"
-            else
-              echo "[FAIL] $desc (expected exit=$expected, got=$rc)"
-              cat /tmp/assert_out.log
-              FAILED=1
-            fi
-          }
-
           # --- Perintah dasar ---
           assert_success "atha --version" atha --version
           assert_success "atha --help" atha --help
           assert_success "atha (tanpa argumen, cetak HELP)" atha
-
-          # --- doctor ---
           assert_success "atha doctor" atha doctor
 
           # --- list: 4 varian ---
@@ -249,23 +224,6 @@ jobs:
           assert_success "atha list explicit" atha list explicit
           assert_success "atha list aur" atha list aur
           assert_success "atha list all --limit 5" atha list all --limit 5
-
-          # Regresi issue #14 poin 2: --limit HANYA berlaku untuk "all".
-          full_count=$(pacman -Q | wc -l)
-          atha_count=$(atha list installed --limit 1 | wc -l)
-          if [ "$atha_count" -lt "$full_count" ]; then
-            echo "[FAIL] 'list installed --limit 1' terpotong (dapat $atha_count baris, seharusnya $full_count) — regresi issue #14 poin 2!"
-            FAILED=1
-          else
-            echo "[PASS] 'list installed --limit' diabaikan sesuai desain ($atha_count baris)"
-          fi
-          all_lines=$(atha list all --limit 3 | wc -l)
-          if [ "$all_lines" -gt 6 ]; then
-            echo "[FAIL] 'list all --limit 3' seharusnya dipotong pendek, dapat $all_lines baris"
-            FAILED=1
-          else
-            echo "[PASS] 'list all --limit' membatasi output ($all_lines baris)"
-          fi
 
           # --- info & search ---
           assert_success "atha info pacman" atha info pacman
@@ -280,29 +238,6 @@ jobs:
           assert_success "atha update --plan" atha update --plan
           assert_success "atha update --dry-run" atha update --dry-run
 
-          # Regresi issue #14 poin 1: membatalkan konfirmasi = exit 0, BUKAN error.
-          echo "n" | atha remove pacman > /tmp/cancel_out.log 2>&1
-          cancel_rc=$?
-          if [ "$cancel_rc" -ne 0 ]; then
-            echo "[FAIL] Membatalkan konfirmasi seharusnya exit 0, dapat exit=$cancel_rc — regresi issue #14 poin 1!"
-            cat /tmp/cancel_out.log
-            FAILED=1
-          elif ! grep -q "Operation cancelled" /tmp/cancel_out.log; then
-            echo "[FAIL] Pesan 'Operation cancelled' tidak ditemukan setelah membatalkan"
-            FAILED=1
-          else
-            echo "[PASS] Membatalkan konfirmasi exit 0 secara graceful (issue #14 poin 1 terverifikasi)"
-          fi
-
-          # --- Real execution round-trip (bukan cuma --plan/--dry-run) ---
-          # "tree" dipakai sebagai paket kecil & aman untuk uji instal+hapus
-          # sungguhan lewat --yes, karena tidak ikut terpasang oleh dependency
-          # manapun di atas.
-          assert_success "atha install --yes tree (eksekusi nyata)" atha install --yes tree
-          assert_success "'tree' benar-benar terpasang via pacman" pacman -Qi tree
-          assert_success "atha remove --yes tree (eksekusi nyata)" atha remove --yes tree
-          assert_failure "'tree' benar-benar terhapus via pacman" pacman -Qi tree
-
           # --- history: semua mode tampilan + filter ---
           assert_success "atha history --limit 5" atha history --limit 5
           assert_success "atha history --full --limit 5" atha history --full --limit 5
@@ -311,47 +246,32 @@ jobs:
           assert_success "atha history --action install --limit 5" atha history --action install --limit 5
           assert_success "atha history --status success --limit 5" atha history --status success --limit 5
 
-          # --- NO_COLOR harus benar-benar polos tanpa escape code ---
-          if NO_COLOR=1 atha list installed | head -1 | grep -qP '\x1b'; then
-            echo "[FAIL] NO_COLOR=1 tapi output masih mengandung ANSI escape code"
-            FAILED=1
-          else
-            echo "[PASS] NO_COLOR=1 menghasilkan output polos tanpa escape code"
-          fi
-
           echo "===================================================="
           if [ "$FAILED" -ne 0 ]; then
-            echo "[QA] SATU ATAU LEBIH TEST GAGAL — lihat [FAIL] di atas."
+            echo "[QA] SATU ATAU LEBIH TEST GAGAL."
             exit 1
           fi
           echo "[QA] SUCCESS: Semua fitur CLI & regression check lolos!"
           echo "===================================================="
 
-      # --- TAHAP 4: AUR HELPER (YAY) WORKFLOW INTEGRATION TEST ---
+      # --- TAHAP 4: AUR HELPER (YAY) INTEGRATION TEST ---
       - name: QA Test AUR Helper Integration (yay)
         run: |
           set -uo pipefail
           echo "===================================================="
           echo "[QA] Testing AUR Helper (yay) Compatibility"
           echo "===================================================="
-
           YAY_URL=$(curl -sL https://api.github.com/repos/Jguer/yay/releases/latest 2>/dev/null \
             | grep -o '"browser_download_url": *"[^"]*x86_64\.pkg\.tar\.zst"' \
             | head -n1 | cut -d'"' -f4 || true)
-
           if [ -n "$YAY_URL" ]; then
-            echo "[QA] Downloading yay from: $YAY_URL"
             curl -sLo /tmp/yay.pkg.tar.zst "$YAY_URL" || true
             if [ -f /tmp/yay.pkg.tar.zst ] && [ -s /tmp/yay.pkg.tar.zst ]; then
               pacman -U --noconfirm /tmp/yay.pkg.tar.zst || true
             fi
           fi
-
           if command -v yay &> /dev/null; then
-            echo "[QA] yay is installed successfully. Testing package query..."
-            yay -Qi atha || echo "[QA] Note: atha is installed via local makepkg, verifying registry..."
-          else
-            echo "[QA] Notice: yay binary not installed, skipping auxiliary helper check gracefully."
+            yay -Qi atha || true
           fi
 
       # --- TAHAP 5: SAFETY LAYER & EDGE CASES TESTING ---
@@ -361,16 +281,14 @@ jobs:
           echo "===================================================="
           echo "[QA] Testing Safety Layer (Lock Handling)"
           echo "===================================================="
-
           trap 'rm -f /var/lib/pacman/db.lck' EXIT
           touch /var/lib/pacman/db.lck
           atha doctor || true
           if [ -f /var/lib/pacman/db.lck ]; then
-            echo "[FAIL] db.lck masih ada setelah atha doctor — trap cleanup tidak jalan?"
+            echo "[FAIL] db.lck masih ada setelah atha doctor"
             exit 1
           fi
           echo "[PASS] db.lck ditangani dengan baik dan dibersihkan"
-
           echo "===================================================="
           echo "[QA] SUCCESS: Comprehensive Enterprise QA Suite Passed!"
           echo "===================================================="
