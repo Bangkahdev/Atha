@@ -159,7 +159,7 @@ jobs:
 
             echo "[QA] Running PKGBUILD lint check..."
             namcap_pkgbuild_rc=0
-            namcap_pkgbuild_output="$(namcap PKGBUILD 2>&1)" \vert{}\vert{} namcap_pkgbuild_rc=$?
+            namcap_pkgbuild_output="$(namcap PKGBUILD 2>&1)" || namcap_pkgbuild_rc=$?
             echo "$namcap_pkgbuild_output"
             if echo "$namcap_pkgbuild_output" | grep -qE '(^|[[:space:]])E:[[:space:]]'; then
               echo "[QA] Namcap found PKGBUILD ERROR(S) — failing CI."
@@ -168,7 +168,7 @@ jobs:
 
             echo "[QA] Running built package audit..."
             namcap_pkg_rc=0
-            namcap_pkg_output="$(namcap "$PKG_FILE" 2>&1)" \vert{}\vert{} namcap_pkg_rc=$?
+            namcap_pkg_output="$(namcap "$PKG_FILE" 2>&1)" || namcap_pkg_rc=$?
             echo "$namcap_pkg_output"
             if echo "$namcap_pkg_output" | grep -qE '(^|[[:space:]])E:[[:space:]]'; then
               echo "[QA] Namcap found package ERROR(S) — failing CI."
