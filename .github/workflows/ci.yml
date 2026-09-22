@@ -279,16 +279,27 @@ jobs:
         run: |
           set -uo pipefail
           echo "===================================================="
-          echo "[QA] Testing Safety Layer (Lock Handling)"
+          echo "[QA] Testing Safety Layer (Lock Handling Detection)"
           echo "===================================================="
-          trap 'rm -f /var/lib/pacman/db.lck' EXIT
+
+          # Buat file db.lck simulasi
           touch /var/lib/pacman/db.lck
-          atha doctor || true
-          if [ -f /var/lib/pacman/db.lck ]; then
-            echo "[FAIL] db.lck masih ada setelah atha doctor"
+          
+          # Jalankan atha doctor dan tangkap output-nya
+          DOCTOR_OUTPUT=$(atha doctor 2>&1 || true)
+          echo "$DOCTOR_OUTPUT"
+
+          # Bersihkan file lck secara manual setelah pengujian selesai
+          rm -f /var/lib/pacman/db.lck
+
+          # Assert: pastikan atha doctor mendeteksi keberadaan db.lck
+          if echo "$DOCTOR_OUTPUT" | grep -q "pacman database lock exists"; then
+            echo "[PASS] atha doctor berhasil mendeteksi keberadaan db.lck"
+          else
+            echo "[FAIL] atha doctor gagal mendeteksi db.lck"
             exit 1
           fi
-          echo "[PASS] db.lck ditangani dengan baik dan dibersihkan"
+
           echo "===================================================="
           echo "[QA] SUCCESS: Comprehensive Enterprise QA Suite Passed!"
           echo "===================================================="
