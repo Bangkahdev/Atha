@@ -6,17 +6,9 @@ on:
       - 'v*'
 
 permissions:
-  contents: write   # dibutuhkan supaya GITHUB_TOKEN boleh membuat/upload GitHub Release
+  contents: write   # Dibutuhkan oleh job rilis untuk membuat/upload GitHub Release
 
 jobs:
-  # ------------------------------------------------------------------
-  # TAHAP 1: Build binary release SUNGGUHAN di sini (bukan diupload
-  # manual lagi), verifikasi paksa bahwa hasilnya benar ELF Linux, lalu
-  # upload ke GitHub Release. Ini pagar permanen: kalau binary yang
-  # dihasilkan bukan ELF 64-bit (misal ke-build salah target/platform),
-  # job ini GAGAL dan tidak ada apa pun yang ter-upload atau ter-publish
-  # ke AUR — jadi user tidak akan pernah menerima binary yang salah lagi.
-  # ------------------------------------------------------------------
   build-and-release:
     name: Build & Verify Linux Binary, Publish to GitHub Release
     runs-on: ubuntu-latest
@@ -45,7 +37,7 @@ jobs:
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           if [ -z "$VERSION" ]; then
-            echo "::error::Tag name kosong setelah strip 'v' prefix (GITHUB_REF_NAME=$GITHUB_REF_NAME)"
+            echo "::error::Tag name kosong setelah strip 'v' prefix"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -56,19 +48,16 @@ jobs:
           set -euo pipefail
           cargo build --release --locked
 
-      # PAGAR UTAMA: gagal keras kalau binary yang dihasilkan bukan ELF
-      # Linux. Ini yang menutup celah insiden binary Windows ter-upload
-      # sebagai rilis Linux.
-      - name: Verify binary is a genuine Linux ELF executable
+      - name: Verify binary is a genuine x86_64 Linux ELF executable
         run: |
           set -euo pipefail
           FILE_INFO="$(file target/release/atha)"
           echo "$FILE_INFO"
-          if ! echo "$FILE_INFO" | grep -q 'ELF 64-bit'; then
-            echo "::error::Binary yang dihasilkan BUKAN ELF 64-bit Linux (dapat: $FILE_INFO). Membatalkan rilis — tidak ada yang di-upload ke GitHub Release maupun AUR."
+          if ! echo "$FILE_INFO" | grep -q 'ELF 64-bit LSB executable, x86-64'; then
+            echo "::error::Binary bukan x86_64 ELF Linux yang valid (dapat: $FILE_INFO). Membatalkan rilis."
             exit 1
           fi
-          echo "[CD] Verified: binary adalah ELF 64-bit Linux yang valid."
+          echo "[CD] Verified: biner adalah x86_64 ELF Linux yang valid."
 
       - name: Rename binary for release asset
         run: |
@@ -84,18 +73,11 @@ jobs:
           echo "sha256=$SUM" >> "$GITHUB_OUTPUT"
 
       - name: Upload binary to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@c95fe148c366fe419b136fc1b7d8c0f21fc6c9f9 # v2.2.1
         with:
           files: atha-x86_64-linux
           fail_on_unmatched_files: true
 
-  # ------------------------------------------------------------------
-  # TAHAP 2: Publish ke AUR — HANYA jalan setelah TAHAP 1 sukses (lihat
-  # `needs:`), jadi AUR tidak akan pernah diupdate menunjuk ke rilis yang
-  # binary-nya belum tervalidasi atau belum ter-upload. sha256sums di
-  # PKGBUILD sekarang ikut di-update otomatis dari hasil build di atas,
-  # bukan mengandalkan checksum lama yang mungkin sudah tidak cocok.
-  # ------------------------------------------------------------------
   aur-publish:
     name: Publish to AUR
     needs: build-and-release
@@ -147,12 +129,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "$VERSION" ]; then
-            echo "::error::VERSION kosong (dari job build-and-release) — membatalkan publish AUR."
-            exit 1
-          fi
-          if [ -z "$SHA256" ]; then
-            echo "::error::SHA256 kosong (dari job build-and-release) — membatalkan publish AUR."
+          if [ -z "$VERSION" ] || [ -z "$SHA256" ]; then
+            echo "::error::VERSION atau SHA256 kosong — membatalkan publish AUR."
             exit 1
           fi
 
@@ -164,10 +142,9 @@ jobs:
 
             sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
             sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
-            # sha256sums di-update dari checksum binary yang BARU SAJA divalidasi
-            # dan di-upload di job build-and-release — bukan diketik manual lagi,
-            # jadi tidak akan lagi ketinggalan zaman saat pkgver naik.
-            sed -i "s/^sha256sums=.*/sha256sums=(\x27$SHA256\x27)/" PKGBUILD
+            
+            # Perbaikan penulisan array sha256sums agar tetap mempertahankan format dua elemen (biner + LICENSE 'SKIP')
+            sed -i "s/^sha256sums=(.*/sha256sums=(\x27$SHA256\x27 \x27SKIP\x27)/" PKGBUILD
 
             grep -q "pkgver=$VERSION" PKGBUILD
             grep -q "$SHA256" PKGBUILD
