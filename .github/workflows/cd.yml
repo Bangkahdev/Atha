@@ -1,21 +1,116 @@
-name: CD (Publish to AUR)
+name: CD (Build Release & Publish to AUR)
 
 on:
   push:
     tags:
       - 'v*'
 
+permissions:
+  contents: write   # dibutuhkan supaya GITHUB_TOKEN boleh membuat/upload GitHub Release
+
 jobs:
-  aur-publish:
+  # ------------------------------------------------------------------
+  # TAHAP 1: Build binary release SUNGGUHAN di sini (bukan diupload
+  # manual lagi), verifikasi paksa bahwa hasilnya benar ELF Linux, lalu
+  # upload ke GitHub Release. Ini pagar permanen: kalau binary yang
+  # dihasilkan bukan ELF 64-bit (misal ke-build salah target/platform),
+  # job ini GAGAL dan tidak ada apa pun yang ter-upload atau ter-publish
+  # ke AUR — jadi user tidak akan pernah menerima binary yang salah lagi.
+  # ------------------------------------------------------------------
+  build-and-release:
+    name: Build & Verify Linux Binary, Publish to GitHub Release
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
+    outputs:
+      sha256: ${{ steps.checksum.outputs.sha256 }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          pacman -Sy --noconfirm --needed base-devel rustup git
+
+      - name: Configure Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup default stable
+
+      - name: Resolve version from tag
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ -z "$VERSION" ]; then
+            echo "::error::Tag name kosong setelah strip 'v' prefix (GITHUB_REF_NAME=$GITHUB_REF_NAME)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "[CD] Building release for version: $VERSION"
+
+      - name: Build release binary
+        run: |
+          set -euo pipefail
+          cargo build --release --locked
+
+      # PAGAR UTAMA: gagal keras kalau binary yang dihasilkan bukan ELF
+      # Linux. Ini yang menutup celah insiden binary Windows ter-upload
+      # sebagai rilis Linux.
+      - name: Verify binary is a genuine Linux ELF executable
+        run: |
+          set -euo pipefail
+          FILE_INFO="$(file target/release/atha)"
+          echo "$FILE_INFO"
+          if ! echo "$FILE_INFO" | grep -q 'ELF 64-bit'; then
+            echo "::error::Binary yang dihasilkan BUKAN ELF 64-bit Linux (dapat: $FILE_INFO). Membatalkan rilis — tidak ada yang di-upload ke GitHub Release maupun AUR."
+            exit 1
+          fi
+          echo "[CD] Verified: binary adalah ELF 64-bit Linux yang valid."
+
+      - name: Rename binary for release asset
+        run: |
+          set -euo pipefail
+          cp target/release/atha atha-x86_64-linux
+
+      - name: Compute sha256 checksum
+        id: checksum
+        run: |
+          set -euo pipefail
+          SUM="$(sha256sum atha-x86_64-linux | awk '{print $1}')"
+          echo "[CD] sha256: $SUM"
+          echo "sha256=$SUM" >> "$GITHUB_OUTPUT"
+
+      - name: Upload binary to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: atha-x86_64-linux
+          fail_on_unmatched_files: true
+
+  # ------------------------------------------------------------------
+  # TAHAP 2: Publish ke AUR — HANYA jalan setelah TAHAP 1 sukses (lihat
+  # `needs:`), jadi AUR tidak akan pernah diupdate menunjuk ke rilis yang
+  # binary-nya belum tervalidasi atau belum ter-upload. sha256sums di
+  # PKGBUILD sekarang ikut di-update otomatis dari hasil build di atas,
+  # bukan mengandalkan checksum lama yang mungkin sudah tidak cocok.
+  # ------------------------------------------------------------------
+  aur-publish:
+    name: Publish to AUR
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    env:
+      VERSION: ${{ needs.build-and-release.outputs.version }}
+      SHA256: ${{ needs.build-and-release.outputs.sha256 }}
     steps:
       - name: Install pacman dependencies
         run: |
+          set -euo pipefail
           pacman -Sy --noconfirm --needed base-devel git rust openssh sudo
-          
-          # Buat user non-root 'builder'
+
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
@@ -24,21 +119,22 @@ jobs:
 
       - name: Fix Workspace Permissions
         run: |
-          # Berikan kepemilikan direktori workspace ke user builder agar tidak permission denied
+          set -euo pipefail
           chown -R builder:builder "$GITHUB_WORKSPACE"
 
       - name: Setup SSH for AUR
         shell: su - builder -c "bash {0}"
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
           echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur_id_rsa
           chmod 600 ~/.ssh/aur_id_rsa
           ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
-          
+
           git config --global user.name "Bangkah"
           git config --global user.email "bangkah@aur.archlinux.org"
           git config --global --add safe.directory '*'
-          
+
           cat << EOF > ~/.ssh/config
           Host aur.archlinux.org
             IdentityFile ~/.ssh/aur_id_rsa
@@ -47,30 +143,43 @@ jobs:
 
       - name: Generate .SRCINFO & Sync to AUR
         env:
-          TAG_REF: ${{ github.ref_name }}
           WORKSPACE: ${{ github.workspace }}
         run: |
-          VERSION="${TAG_REF#v}"
-          
-          echo "Building for version: $VERSION"
+          set -euo pipefail
+
           if [ -z "$VERSION" ]; then
-            echo "Error: Version is empty!"
+            echo "::error::VERSION kosong (dari job build-and-release) — membatalkan publish AUR."
             exit 1
           fi
-          
-          sudo -u builder bash -c "
-            cd \"$WORKSPACE\"
-            sed -i 's/^pkgver=.*/pkgver=$VERSION/' PKGBUILD
-            sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
-            
+          if [ -z "$SHA256" ]; then
+            echo "::error::SHA256 kosong (dari job build-and-release) — membatalkan publish AUR."
+            exit 1
+          fi
+
+          echo "[CD] Publishing PKGBUILD for version=$VERSION sha256=$SHA256"
+
+          sudo -u builder VERSION="$VERSION" SHA256="$SHA256" WORKSPACE="$WORKSPACE" bash -c '
+            set -euo pipefail
+            cd "$WORKSPACE"
+
+            sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+            sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+            # sha256sums di-update dari checksum binary yang BARU SAJA divalidasi
+            # dan di-upload di job build-and-release — bukan diketik manual lagi,
+            # jadi tidak akan lagi ketinggalan zaman saat pkgver naik.
+            sed -i "s/^sha256sums=.*/sha256sums=(\x27$SHA256\x27)/" PKGBUILD
+
+            grep -q "pkgver=$VERSION" PKGBUILD
+            grep -q "$SHA256" PKGBUILD
+
             makepkg --printsrcinfo > .SRCINFO
-            
+
             git clone ssh://aur@aur.archlinux.org/atha.git /tmp/aur-atha
             cp PKGBUILD /tmp/aur-atha/
             cp .SRCINFO /tmp/aur-atha/
-            
+
             cd /tmp/aur-atha
             git add PKGBUILD .SRCINFO
-            git commit -m 'maint: release version $VERSION' || echo 'No changes to commit'
+            git commit -m "maint: release version $VERSION" || echo "No changes to commit"
             git push origin master
-          "
+          '
