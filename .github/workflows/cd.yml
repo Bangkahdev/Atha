@@ -138,28 +138,33 @@ jobs:
 
           echo "[CD] Publishing PKGBUILD for version=$VERSION sha256=$SHA256"
 
+          # Tulis skrip Python ke file terpisah untuk menghindari masalah escaping Bash bersarang
+          cat << 'EOF' > /tmp/update_pkgbuild.py
+          import os
+          import re
+
+          ver = os.environ.get('VERSION')
+          sha = os.environ.get('SHA256')
+
+          with open('PKGBUILD', 'r') as f:
+              content = f.read()
+
+          content = re.sub(r'^pkgver=.*$', f'pkgver={ver}', content, flags=re.MULTILINE)
+          content = re.sub(r'^pkgrel=.*$', 'pkgrel=1', content, flags=re.MULTILINE)
+          
+          # Menangani array sha256sums multiline secara presisi (biner + LICENSE 'SKIP')
+          new_sha_block = f"sha256sums=('{sha}'\n            'SKIP')"
+          content = re.sub(r'sha256sums=\(.*?\)', new_sha_block, content, flags=re.DOTALL)
+
+          with open('PKGBUILD', 'w') as f:
+              f.write(content)
+          EOF
+
           sudo -u builder VERSION="$VERSION" SHA256="$SHA256" WORKSPACE="$WORKSPACE" bash -c '
             set -euo pipefail
             cd "$WORKSPACE"
 
-            # Gunakan Python untuk memperbarui pkgver, pkgrel, dan multiline sha256sums secara aman
-            python3 -c "
-            import os, re
-            ver = os.environ[\x27VERSION\x27]
-            sha = os.environ[\x27SHA256\x27]
-            
-            with open(\x27PKGBUILD\x27, \x27r\x27) as f:
-                content = f.read()
-                
-            content = re.sub(r\x27^pkgver=.*$\x27, f\x27pkgver={ver}\x27, content, flags=re.MULTILINE)
-            content = re.sub(r\x27^pkgrel=.*$\x27, \x27pkgrel=1\x27, content, flags=re.MULTILINE)
-            content = re.sub(r\x27sha256sums=\\(.*?\\)\x27, f\x27sha56sums=(\x27{sha}\x27 \x27SKIP\x27)\x27 if \x27sha56sums\x27 in content else f\x27sha256sums=(\x27{sha}\x27 \x27SKIP\x27)\x27, content, flags=re.DOTALL)
-            # Pastikan regex sha256sums menangani ejaan standar
-            content = re.sub(r\x27sha256sums=\\(.*?\\)\x27, f\x27sha256sums=(\x27{sha}\x27 \x27SKIP\x27)\x27, content, flags=re.DOTALL)
-            
-            with open(\x27PKGBUILD\x27, \x27w\x27) as f:
-                f.write(content)
-            "
+            python3 /tmp/update_pkgbuild.py
 
             grep -q "pkgver=$VERSION" PKGBUILD
             grep -q "$SHA256" PKGBUILD
