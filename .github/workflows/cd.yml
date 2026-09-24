@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: write   # Dibutuhkan oleh job rilis untuk membuat/upload GitHub Release
+  contents: write  
 
 jobs:
   build-and-release:
@@ -48,12 +48,13 @@ jobs:
           set -euo pipefail
           cargo build --release --locked
 
+      # PAGAR UTAMA: Validasi ketat biner x86_64 ELF Linux (mendukung standar maupun PIE executable)
       - name: Verify binary is a genuine x86_64 Linux ELF executable
         run: |
           set -euo pipefail
           FILE_INFO="$(file target/release/atha)"
           echo "$FILE_INFO"
-          if ! echo "$FILE_INFO" | grep -q 'ELF 64-bit LSB executable, x86-64'; then
+          if ! echo "$FILE_INFO" | grep -Eq 'ELF 64-bit LSB (pie )?executable, x86-64'; then
             echo "::error::Binary bukan x86_64 ELF Linux yang valid (dapat: $FILE_INFO). Membatalkan rilis."
             exit 1
           fi
@@ -72,6 +73,7 @@ jobs:
           echo "[CD] sha256: $SUM"
           echo "sha256=$SUM" >> "$GITHUB_OUTPUT"
 
+      # Pin action release ke commit SHA resmi untuk keamanan supply-chain
       - name: Upload binary to GitHub Release
         uses: softprops/action-gh-release@c95fe148c366fe419b136fc1b7d8c0f21fc6c9f9 # v2.2.1
         with:
@@ -91,7 +93,7 @@ jobs:
       - name: Install pacman dependencies
         run: |
           set -euo pipefail
-          pacman -Sy --noconfirm --needed base-devel git rust openssh sudo
+          pacman -Sy --noconfirm --needed base-devel rustup git openssh sudo python
 
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
@@ -140,11 +142,24 @@ jobs:
             set -euo pipefail
             cd "$WORKSPACE"
 
-            sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
-            sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+            # Gunakan Python untuk memperbarui pkgver, pkgrel, dan multiline sha256sums secara aman
+            python3 -c "
+            import os, re
+            ver = os.environ[\x27VERSION\x27]
+            sha = os.environ[\x27SHA256\x27]
             
-            # Perbaikan penulisan array sha256sums agar tetap mempertahankan format dua elemen (biner + LICENSE 'SKIP')
-            sed -i "s/^sha256sums=(.*/sha256sums=(\x27$SHA256\x27 \x27SKIP\x27)/" PKGBUILD
+            with open(\x27PKGBUILD\x27, \x27r\x27) as f:
+                content = f.read()
+                
+            content = re.sub(r\x27^pkgver=.*$\x27, f\x27pkgver={ver}\x27, content, flags=re.MULTILINE)
+            content = re.sub(r\x27^pkgrel=.*$\x27, \x27pkgrel=1\x27, content, flags=re.MULTILINE)
+            content = re.sub(r\x27sha256sums=\\(.*?\\)\x27, f\x27sha56sums=(\x27{sha}\x27 \x27SKIP\x27)\x27 if \x27sha56sums\x27 in content else f\x27sha256sums=(\x27{sha}\x27 \x27SKIP\x27)\x27, content, flags=re.DOTALL)
+            # Pastikan regex sha256sums menangani ejaan standar
+            content = re.sub(r\x27sha256sums=\\(.*?\\)\x27, f\x27sha256sums=(\x27{sha}\x27 \x27SKIP\x27)\x27, content, flags=re.DOTALL)
+            
+            with open(\x27PKGBUILD\x27, \x27w\x27) as f:
+                f.write(content)
+            "
 
             grep -q "pkgver=$VERSION" PKGBUILD
             grep -q "$SHA256" PKGBUILD
