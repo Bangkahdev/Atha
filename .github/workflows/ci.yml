@@ -58,7 +58,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Cache pacman packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /var/cache/pacman/pkg
           key: pacman-pkg-${{ runner.os }}-${{ hashFiles('.github/workflows/*.yml') }}
@@ -81,7 +81,7 @@ jobs:
           rustup default stable
 
       - name: Cache Cargo dependencies (shared CARGO_HOME)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             /tmp/cargo-home/registry
