@@ -248,9 +248,12 @@ jobs:
           # === info & search: jalur official, AUR fallback, dan kegagalan ===
           assert_success "atha info pacman (official)" atha info pacman
           assert_failure "atha info nama tidak valid ditolak" atha info 'bad name!'
-          assert_failure "atha info paket yang sungguh tidak ada (official+AUR)" atha info definitely-nonexistent-pkg-xyz-987654
+          # timeout eksplisit: nama fiktif ini membuat info/search jatuh ke
+          # AUR RPC HTTP (jaringan nyata), yang sebelumnya tidak dibatasi —
+          # kalau AUR API lambat, step bisa menggantung sampai job timeout.
+          assert_failure "atha info paket yang sungguh tidak ada (official+AUR)" timeout 30 atha info definitely-nonexistent-pkg-xyz-987654
           assert_success "atha search curl (official)" atha search curl
-          assert_failure "atha search term yang sungguh tidak ada (official+AUR)" atha search definitely-nonexistent-term-xyz-987654
+          assert_failure "atha search term yang sungguh tidak ada (official+AUR)" timeout 30 atha search definitely-nonexistent-term-xyz-987654
 
           # === install/remove/update: --plan & --dry-run, jalur official ===
           assert_success "atha install --plan pacman (official)" atha install --plan pacman
@@ -291,11 +294,15 @@ jobs:
           if [ -f "$INJECTION_MARKER" ]; then
             echo "[FAIL] SECURITY: command injection berhasil membuat marker file! Validasi nama paket bocor."
             FAILED=1
+          elif [ "$inject_rc" -eq 124 ]; then
+            echo "[FAIL] atha TIMEOUT (15s) saat diberi nama paket berbahaya — bukan bukti ditolak, kemungkinan menggantung"
+            cat /tmp/inject_out.log
+            FAILED=1
           elif [ "$inject_rc" -eq 0 ]; then
             echo "[FAIL] Nama paket dengan shell-metacharacter seharusnya ditolak (exit != 0)"
             FAILED=1
           else
-            echo "[PASS] Nama paket berbahaya ditolak dengan aman, tidak ada eksekusi command tersembunyi"
+            echo "[PASS] Nama paket berbahaya ditolak dengan aman, tidak ada eksekusi command tersembunyi (exit=$inject_rc)"
           fi
           rm -f "$INJECTION_MARKER"
 
@@ -357,8 +364,26 @@ jobs:
 
           echo "[TRACE] Mulai uji NO_COLOR..."
           # === NO_COLOR harus benar-benar polos tanpa escape code ===
-          if NO_COLOR=1 atha list installed | head -1 | grep -qP '\x1b'; then
-            echo "[FAIL] NO_COLOR=1 tapi output masih mengandung ANSI escape code"
+          # PENTING: `atha list installed` cuma meneruskan mentah output
+          # `pacman -Q` — tidak pernah lewat color()/info_msg()/success(),
+          # jadi baris itu TIDAK PERNAH mengandung ANSI apa pun bahkan tanpa
+          # NO_COLOR sama sekali. Cek terhadapnya akan selalu [PASS] secara
+          # trivial, tidak pernah bisa menangkap regresi NO_COLOR beneran.
+          # `atha doctor` dipakai sebagai gantinya karena benar-benar
+          # memanggil success()/warn()/info_msg() yang diwarnai.
+          #
+          # Diuji DUA ARAH supaya assertion ini benar-benar bermakna: tanpa
+          # NO_COLOR harus ADA escape code (kontrol positif — membuktikan
+          # instrumennya bisa mendeteksi warna sama sekali), dan dengan
+          # NO_COLOR=1 harus TIDAK ADA.
+          if atha doctor 2>&1 | grep -qP '\x1b'; then
+            echo "[PASS] Tanpa NO_COLOR, 'atha doctor' menghasilkan ANSI escape code (kontrol positif)"
+          else
+            echo "[FAIL] Tanpa NO_COLOR, 'atha doctor' TIDAK menghasilkan escape code sama sekali — instrumen uji tidak valid atau mode warna rusak"
+            FAILED=1
+          fi
+          if NO_COLOR=1 atha doctor 2>&1 | grep -qP '\x1b'; then
+            echo "[FAIL] NO_COLOR=1 tapi 'atha doctor' masih mengandung ANSI escape code"
             FAILED=1
           else
             echo "[PASS] NO_COLOR=1 menghasilkan output polos tanpa escape code"
@@ -421,11 +446,20 @@ jobs:
           echo "[QA] Testing Safety Layer (Lock Handling Detection)"
           echo "===================================================="
 
+          # Trap ini jaring pengaman untuk crash TAK TERDUGA (mis. atha doctor
+          # segfault) — trap EXIT baru jalan saat SELURUH step ini selesai,
+          # bukan langsung setelah `atha doctor` dipanggil. Makanya verifikasi
+          # "sudah bersih" di bawah TIDAK BOLEH mengandalkan trap ini sudah
+          # jalan (itu bug P1 dari Greptile: dicek sebelum trap sempat
+          # eksekusi, jadi selalu gagal) — cleanup utamanya dilakukan manual
+          # lewat `rm` di bawah, trap cuma cadangan.
           trap 'rm -f /var/lib/pacman/db.lck' EXIT
           touch /var/lib/pacman/db.lck
 
           DOCTOR_OUTPUT=$(atha doctor 2>&1 || true)
           echo "$DOCTOR_OUTPUT"
+
+          rm -f /var/lib/pacman/db.lck
 
           if echo "$DOCTOR_OUTPUT" | grep -q "pacman database lock exists"; then
             echo "[PASS] atha doctor berhasil mendeteksi keberadaan db.lck"
@@ -435,8 +469,10 @@ jobs:
           fi
 
           if [ -f /var/lib/pacman/db.lck ]; then
-            echo "[FAIL] db.lck masih ada setelah trap cleanup — seharusnya sudah bersih"
+            echo "[FAIL] db.lck masih ada setelah rm manual — sistem file bermasalah?"
             exit 1
+          else
+            echo "[PASS] db.lck berhasil dibersihkan"
           fi
 
           echo "===================================================="
