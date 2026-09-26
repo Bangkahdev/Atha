@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -28,9 +28,6 @@ jobs:
 
       # cargo test menjalankan unit test murni di src/main.rs (mod tests):
       # validasi nama paket, format_bytes, BuildDirGuard cleanup-on-drop, dll.
-      # Ini jalan di ubuntu-latest tanpa pacman, jadi hanya mencakup logika
-      # yang tidak menyentuh pacman/jaringan — sisanya diuji di job
-      # qa-advanced-enterprise di bawah, yang punya pacman sungguhan.
       - name: Check, Format & Unit Test
         run: |
           set -euo pipefail
@@ -46,19 +43,15 @@ jobs:
     container:
       image: archlinux:latest
     env:
-      # CARGO_HOME/CARGO_TARGET_DIR dibuat di /tmp dan dipakai bersama oleh root
-      # maupun user "builder", sehingga dependency crate yang sudah
-      # didownload/dicompile pada build pertama (cargo build --release)
-      # langsung dipakai ulang saat makepkg menjalankan cargo build-nya sendiri.
       CARGO_HOME: /tmp/cargo-home
       CARGO_TARGET_DIR: /tmp/cargo-target
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Cache pacman packages
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           path: /var/cache/pacman/pkg
           key: pacman-pkg-${{ runner.os }}-${{ hashFiles('.github/workflows/*.yml') }}
@@ -68,9 +61,8 @@ jobs:
       - name: Install System Dependencies
         run: |
           set -euo pipefail
-          # pacman-contrib ditambahkan supaya `checkupdates` tersedia — tanpa
-          # ini, `atha update --plan/--dry-run` selalu jatuh ke fallback
-          # `pacman -Qu` dan jalur utamanya (checkupdates) tidak pernah teruji.
+          # pacman-contrib: supaya `checkupdates` tersedia untuk `atha update`.
+          # python: server HTTP lokal buat simulasi curl/wget yang realistis.
           pacman -Sy --noconfirm --needed base-devel rustup git curl wget sudo yajl pacman-contrib python
 
       - name: Configure Rust toolchain
@@ -81,7 +73,7 @@ jobs:
           rustup default stable
 
       - name: Cache Cargo dependencies (shared CARGO_HOME)
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           path: |
             /tmp/cargo-home/registry
@@ -113,27 +105,29 @@ jobs:
           # Method 2: Local binary install
           atha --version
 
-          # Method 3 & 3b: curl & wget simulation via local python HTTP server
+          # Method 3 & 3b: curl & wget lewat server HTTP lokal (lebih realistis
+          # daripada file://, benar-benar lewat stack jaringan)
           mkdir -p /tmp/mock-releases/v3.1.1/
           cp "$CARGO_TARGET_DIR/release/atha" /tmp/mock-releases/v3.1.1/atha-x86_64-linux
 
-          # Jalankan server HTTP lokal di port 8000
           python -m http.server 8000 --directory /tmp/mock-releases &
           SERVER_PID=$!
           trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
-          sleep 1
 
-          # Uji unduh via curl
+          # Poll sampai server benar-benar siap, bukan blind sleep tetap
+          for i in $(seq 1 20); do
+            curl -sf "http://localhost:8000/v3.1.1/atha-x86_64-linux" -o /dev/null && break
+            sleep 0.25
+          done
+
           curl -sLo /usr/local/bin/atha-curl "http://localhost:8000/v3.1.1/atha-x86_64-linux"
           chmod +x /usr/local/bin/atha-curl
           atha-curl --version
 
-          # Uji unduh via wget
           wget -qO /usr/local/bin/atha-wget "http://localhost:8000/v3.1.1/atha-x86_64-linux"
           chmod +x /usr/local/bin/atha-wget
           atha-wget --version
 
-          # Matikan server HTTP lokal
           kill $SERVER_PID 2>/dev/null || true
 
           # Method 4/5: makepkg (PKGBUILD) — juga memvalidasi source/checksum/
@@ -165,6 +159,10 @@ jobs:
               echo "[QA] Namcap found PKGBUILD ERROR(S) — failing CI."
               exit 1
             fi
+            if [ "$namcap_pkgbuild_rc" -ne 0 ] && ! echo "$namcap_pkgbuild_output" | grep -qE '(^|[[:space:]])(W|E):[[:space:]]'; then
+              echo "[QA] namcap failed to run against PKGBUILD (no diagnostics produced) — failing CI."
+              exit 1
+            fi
 
             echo "[QA] Running built package audit..."
             namcap_pkg_rc=0
@@ -172,6 +170,10 @@ jobs:
             echo "$namcap_pkg_output"
             if echo "$namcap_pkg_output" | grep -qE '(^|[[:space:]])E:[[:space:]]'; then
               echo "[QA] Namcap found package ERROR(S) — failing CI."
+              exit 1
+            fi
+            if [ "$namcap_pkg_rc" -ne 0 ] && ! echo "$namcap_pkg_output" | grep -qE '(^|[[:space:]])(W|E):[[:space:]]'; then
+              echo "[QA] namcap failed to run against the built package (no diagnostics produced) — failing CI."
               exit 1
             fi
           else
@@ -184,7 +186,20 @@ jobs:
       # --- TAHAP 3: FULL CLI FEATURE & REGRESSION TEST SUITE ---
       - name: QA Test All CLI Commands, Modes & Known Regressions
         run: |
-          set -uo pipefail
+          # PENTING: GitHub Actions menjalankan setiap `run:` di container job
+          # lewat `sh -e {0}` secara default (lihat log mentah run manapun:
+          # ada baris "shell: sh -e {0}") — artinya `-e` (errexit) SUDAH aktif
+          # sejak shell ini di-invoke oleh runner, SEBELUM baris `set` manapun
+          # di script ini sempat jalan. `set -uo pipefail` HANYA menambahkan
+          # flag -u dan pipefail; itu TIDAK mencabut -e yang sudah menyala.
+          # Ini penyebab asli beberapa "hang misterius" sebelumnya: begitu
+          # command standalone (di luar if/assert helper) mengembalikan
+          # non-zero — padahal itu justru HASIL YANG DIHARAPKAN dari uji
+          # tersebut — errexit langsung membunuh seluruh script tanpa jejak,
+          # tanpa sempat mencetak [FAIL] apa pun. `set +e` di sini WAJIB ada
+          # untuk benar-benar mematikannya, baru -u dan pipefail diaktifkan.
+          set +e
+          set -uo pipefail   # -e sengaja OFF: assertion helper di bawah yang menentukan pass/fail
           echo "===================================================="
           echo "[QA] Full CLI Feature & Regression Test Suite"
           echo "===================================================="
@@ -209,46 +224,221 @@ jobs:
               cat /tmp/assert_out.log
               FAILED=1
             else
-              echo "[PASS] $desc (gagal seperti yang diharapkan)"
+              local rc=$?
+              # Exit 124 dari `timeout` bukan "gagal sesuai harapan" — itu
+              # tanda command menggantung/tidak sempat selesai dalam batas
+              # waktu, hasilnya TIDAK KONKLUSIF. Kalau ini diterima begitu
+              # saja sebagai [PASS], hang beneran di masa depan akan lolos
+              # diam-diam persis seperti bug di uji injeksi sebelumnya —
+              # cuma sekarang lewat helper ini, bukan cuma satu titik manual.
+              if [ "$rc" -eq 124 ]; then
+                echo "[FAIL] $desc TIMEOUT — bukan bukti gagal sesuai harapan, kemungkinan menggantung"
+                cat /tmp/assert_out.log
+                FAILED=1
+              else
+                echo "[PASS] $desc (gagal seperti yang diharapkan, exit=$rc)"
+              fi
             fi
           }
 
-          # --- Perintah dasar ---
+          # === Perintah dasar ===
           assert_success "atha --version" atha --version
           assert_success "atha --help" atha --help
           assert_success "atha (tanpa argumen, cetak HELP)" atha
-          assert_success "atha doctor" atha doctor
+          assert_success "atha doctor (lingkungan sehat)" atha doctor
 
-          # --- list: 4 varian ---
+          # === list: 4 varian + regresi issue #14 poin 2 ===
           assert_success "atha list installed" atha list installed
           assert_success "atha list explicit" atha list explicit
           assert_success "atha list aur" atha list aur
           assert_success "atha list all --limit 5" atha list all --limit 5
 
-          # --- info & search ---
-          assert_success "atha info pacman" atha info pacman
-          assert_failure "atha info dengan nama tidak valid ditolak" atha info 'bad name!'
-          assert_success "atha search curl" atha search curl
+          full_count=$(pacman -Q | wc -l)
+          atha_count=$(atha list installed --limit 1 | wc -l)
+          if [ "$atha_count" -lt "$full_count" ]; then
+            echo "[FAIL] 'list installed --limit 1' terpotong ($atha_count vs $full_count baris) — regresi issue #14 poin 2!"
+            FAILED=1
+          else
+            echo "[PASS] 'list installed --limit' diabaikan sesuai desain ($atha_count baris)"
+          fi
+          all_lines=$(atha list all --limit 3 | wc -l)
+          if [ "$all_lines" -gt 6 ]; then
+            echo "[FAIL] 'list all --limit 3' seharusnya dipotong pendek, dapat $all_lines baris"
+            FAILED=1
+          else
+            echo "[PASS] 'list all --limit' membatasi output ($all_lines baris)"
+          fi
 
-          # --- install/remove/update: --plan & --dry-run ---
-          assert_success "atha install --plan pacman" atha install --plan pacman
-          assert_success "atha install --dry-run pacman" atha install --dry-run pacman
+          assert_failure "'atha list --limit abc' (non-angka) ditolak clap" atha list installed --limit abc
+
+          # === info & search: jalur official, AUR fallback, dan kegagalan ===
+          assert_success "atha info pacman (official)" atha info pacman
+          assert_failure "atha info nama tidak valid ditolak" atha info 'bad name!'
+          # timeout eksplisit: nama fiktif ini membuat info/search jatuh ke
+          # AUR RPC HTTP (jaringan nyata), yang sebelumnya tidak dibatasi —
+          # kalau AUR API lambat, step bisa menggantung sampai job timeout.
+          assert_failure "atha info paket yang sungguh tidak ada (official+AUR)" timeout 30 atha info definitely-nonexistent-pkg-xyz-987654
+          assert_success "atha search curl (official)" atha search curl
+          assert_failure "atha search term yang sungguh tidak ada (official+AUR)" timeout 30 atha search definitely-nonexistent-term-xyz-987654
+
+          # === install/remove/update: --plan & --dry-run, jalur official ===
+          assert_success "atha install --plan pacman (official)" atha install --plan pacman
+          assert_success "atha install --dry-run pacman (official)" atha install --dry-run pacman
           assert_success "atha remove --plan non-existent-pkg-xyz" atha remove --plan non-existent-pkg-xyz
           assert_success "atha remove --dry-run non-existent-pkg-xyz" atha remove --dry-run non-existent-pkg-xyz
           assert_success "atha update --plan" atha update --plan
           assert_success "atha update --dry-run" atha update --dry-run
 
-          # --- history: semua mode tampilan + filter ---
-          assert_success "atha history --limit 5" atha history --limit 5
-          assert_success "atha history --full --limit 5" atha history --full --limit 5
-          assert_success "atha history --timeline --limit 5" atha history --timeline --limit 5
+          # === install --plan/--dry-run: jalur AUR (paket fiktif, tidak dieksekusi) ===
+          echo "[TRACE] Mulai uji jalur AUR (--plan/--dry-run, paket fiktif)..."
+          assert_success "atha install --plan paket AUR fiktif (uji jalur AUR reachability)" timeout 30 atha install --plan definitely-nonexistent-aur-package-xyz-987654
+          assert_success "atha install --dry-run paket AUR fiktif" timeout 30 atha install --dry-run definitely-nonexistent-aur-package-xyz-987654
+
+          # === Regresi issue #14 poin 1: cancel = exit 0, BUKAN error ===
+          echo "n" | atha remove pacman > /tmp/cancel_out.log 2>&1
+          cancel_rc=$?
+          if [ "$cancel_rc" -ne 0 ]; then
+            echo "[FAIL] Membatalkan konfirmasi seharusnya exit 0, dapat exit=$cancel_rc — regresi issue #14 poin 1!"
+            cat /tmp/cancel_out.log
+            FAILED=1
+          elif ! grep -q "Operation cancelled" /tmp/cancel_out.log; then
+            echo "[FAIL] Pesan 'Operation cancelled' tidak ditemukan"
+            FAILED=1
+          else
+            echo "[PASS] Membatalkan konfirmasi exit 0 secara graceful (issue #14 poin 1 terverifikasi)"
+          fi
+
+          echo "[TRACE] Mulai uji keamanan injeksi nama paket..."
+          # === Keamanan: nama paket dengan shell-metacharacter tidak boleh
+          #     tereksekusi sebagai command (defense-in-depth, bukan cuma
+          #     "harus gagal" — dibuktikan literal tidak ada eksekusi command
+          #     tersembunyi terjadi) ===
+          INJECTION_MARKER="/tmp/should-not-be-created-$$"
+          rm -f "$INJECTION_MARKER"
+          timeout 15 atha install --yes "pkg; touch $INJECTION_MARKER" > /tmp/inject_out.log 2>&1
+          inject_rc=$?
+          if [ -f "$INJECTION_MARKER" ]; then
+            echo "[FAIL] SECURITY: command injection berhasil membuat marker file! Validasi nama paket bocor."
+            FAILED=1
+          elif [ "$inject_rc" -eq 124 ]; then
+            echo "[FAIL] atha TIMEOUT (15s) saat diberi nama paket berbahaya — bukan bukti ditolak, kemungkinan menggantung"
+            cat /tmp/inject_out.log
+            FAILED=1
+          elif [ "$inject_rc" -eq 0 ]; then
+            echo "[FAIL] Nama paket dengan shell-metacharacter seharusnya ditolak (exit != 0)"
+            FAILED=1
+          else
+            echo "[PASS] Nama paket berbahaya ditolak dengan aman, tidak ada eksekusi command tersembunyi (exit=$inject_rc)"
+          fi
+          rm -f "$INJECTION_MARKER"
+
+          echo "[TRACE] Mulai round-trip install/remove nyata (tree)..."
+          # === Real execution round-trip (bukan cuma --plan/--dry-run) ===
+          assert_success "atha install --yes tree (eksekusi nyata)" timeout 60 atha install --yes tree
+          assert_success "'tree' benar-benar terpasang via pacman" pacman -Qi tree
+          assert_success "atha remove --yes tree (eksekusi nyata)" timeout 60 atha remove --yes tree
+          assert_failure "'tree' benar-benar terhapus via pacman" pacman -Qi tree
+
+          echo "[TRACE] Mulai uji kegagalan install AUR (menyentuh jaringan aur.archlinux.org)..."
+          # === Kegagalan instal AUR harus bersih: BuildDirGuard tidak boleh
+          #     meninggalkan direktori build (regresi issue #14 poin 7).
+          #     Pakai timeout eksplisit: ini satu-satunya titik di suite ini
+          #     yang benar-benar menghubungi jaringan AUR nyata (git clone).
+          #     Kalau jaringan lambat/menggantung, timeout ini yang membuat
+          #     CI gagal dengan jelas (exit 124) alih-alih diam membisu
+          #     sampai job timeout keseluruhan tercapai. ===
+          BUILD_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/atha/build"
+          before_count=0
+          [ -d "$BUILD_ROOT" ] && before_count=$(find "$BUILD_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)
+          timeout 45 atha install --yes definitely-nonexistent-aur-package-xyz-987654 > /tmp/aur_fail_out.log 2>&1
+          aur_fail_rc=$?
+          if [ "$aur_fail_rc" -eq 124 ]; then
+            echo "[FAIL] install paket AUR fiktif TIMEOUT (45s) — kemungkinan jaringan aur.archlinux.org lambat/menggantung"
+            cat /tmp/aur_fail_out.log
+            FAILED=1
+          fi
+          after_count=0
+          [ -d "$BUILD_ROOT" ] && after_count=$(find "$BUILD_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)
+          if [ "$aur_fail_rc" -eq 124 ]; then
+            : # sudah dilaporkan [FAIL] di atas karena timeout — jangan dobel-lapor di sini
+          elif [ "$aur_fail_rc" -eq 0 ]; then
+            echo "[FAIL] install paket AUR fiktif seharusnya gagal, tapi sukses"
+            cat /tmp/aur_fail_out.log
+            FAILED=1
+          elif [ "$after_count" -gt "$before_count" ]; then
+            echo "[FAIL] direktori build AUR tertinggal setelah kegagalan clone (before=$before_count after=$after_count) — regresi BuildDirGuard!"
+            FAILED=1
+          else
+            echo "[PASS] Kegagalan instal AUR ditangani rapi, tidak ada direktori build tersisa"
+          fi
+
+          echo "[TRACE] Mulai uji history (semua mode + filter)..."
+          # === history: semua mode tampilan + filter, dan verifikasi ISI-nya ===
+          assert_success "atha history --limit 10" atha history --limit 10
+          assert_success "atha history --full --limit 10" atha history --full --limit 10
+          assert_success "atha history --timeline --limit 10" atha history --timeline --limit 10
           assert_success "atha history --summary" atha history --summary
-          assert_success "atha history --action install --limit 5" atha history --action install --limit 5
-          assert_success "atha history --status success --limit 5" atha history --status success --limit 5
+          assert_success "atha history --action install --limit 10" atha history --action install --limit 10
+          assert_success "atha history --status success --limit 10" atha history --status success --limit 10
+
+          if ! atha history --limit 20 | grep -q "tree"; then
+            echo "[FAIL] Riwayat tidak mencatat operasi 'tree' yang baru saja dilakukan"
+            FAILED=1
+          else
+            echo "[PASS] Riwayat mencatat operasi 'tree' dengan benar"
+          fi
+
+          echo "[TRACE] Mulai uji NO_COLOR..."
+          # === NO_COLOR harus benar-benar polos tanpa escape code ===
+          # PENTING: `atha list installed` cuma meneruskan mentah output
+          # `pacman -Q` — tidak pernah lewat color()/info_msg()/success(),
+          # jadi baris itu TIDAK PERNAH mengandung ANSI apa pun bahkan tanpa
+          # NO_COLOR sama sekali. Cek terhadapnya akan selalu [PASS] secara
+          # trivial, tidak pernah bisa menangkap regresi NO_COLOR beneran.
+          # `atha doctor` dipakai sebagai gantinya karena benar-benar
+          # memanggil success()/warn()/info_msg() yang diwarnai.
+          #
+          # Diuji DUA ARAH supaya assertion ini benar-benar bermakna: tanpa
+          # NO_COLOR harus ADA escape code (kontrol positif — membuktikan
+          # instrumennya bisa mendeteksi warna sama sekali), dan dengan
+          # NO_COLOR=1 harus TIDAK ADA.
+          if atha doctor 2>&1 | grep -qP '\x1b'; then
+            echo "[PASS] Tanpa NO_COLOR, 'atha doctor' menghasilkan ANSI escape code (kontrol positif)"
+          else
+            echo "[FAIL] Tanpa NO_COLOR, 'atha doctor' TIDAK menghasilkan escape code sama sekali — instrumen uji tidak valid atau mode warna rusak"
+            FAILED=1
+          fi
+          if NO_COLOR=1 atha doctor 2>&1 | grep -qP '\x1b'; then
+            echo "[FAIL] NO_COLOR=1 tapi 'atha doctor' masih mengandung ANSI escape code"
+            FAILED=1
+          else
+            echo "[PASS] NO_COLOR=1 menghasilkan output polos tanpa escape code"
+          fi
+
+          echo "[TRACE] Mulai uji doctor dengan git disembunyikan..."
+          # === doctor: kasus TIDAK sehat (dependency beneran hilang) ===
+          # Sebelumnya doctor cuma pernah diuji di jalur "semua OK" — cabang
+          # missing_count>0 (yang membuat doctor exit non-zero) tidak pernah
+          # benar-benar tereksekusi di CI manapun.
+          sudo mv /usr/bin/git /usr/bin/git.ci-hidden
+          trap 'sudo mv /usr/bin/git.ci-hidden /usr/bin/git 2>/dev/null || true' EXIT
+          doctor_missing_output="$(atha doctor 2>&1)"
+          doctor_missing_rc=$?
+          sudo mv /usr/bin/git.ci-hidden /usr/bin/git
+          trap - EXIT
+          if [ "$doctor_missing_rc" -eq 0 ]; then
+            echo "[FAIL] atha doctor seharusnya exit non-zero saat git hilang, dapat exit=0"
+            FAILED=1
+          elif ! echo "$doctor_missing_output" | grep -q "git missing"; then
+            echo "[FAIL] atha doctor tidak melaporkan 'git missing' saat git memang hilang"
+            FAILED=1
+          else
+            echo "[PASS] atha doctor mendeteksi dependency yang hilang dengan benar (git)"
+          fi
 
           echo "===================================================="
           if [ "$FAILED" -ne 0 ]; then
-            echo "[QA] SATU ATAU LEBIH TEST GAGAL."
+            echo "[QA] SATU ATAU LEBIH TEST GAGAL — lihat [FAIL] di atas."
             exit 1
           fi
           echo "[QA] SUCCESS: Semua fitur CLI & regression check lolos!"
@@ -257,6 +447,13 @@ jobs:
       # --- TAHAP 4: AUR HELPER (YAY) INTEGRATION TEST ---
       - name: QA Test AUR Helper Integration (yay)
         run: |
+          # set +e wajib: sh -e {0} adalah invocation default GitHub Actions
+          # untuk container job (lihat penjelasan lengkap di step "QA Test
+          # All CLI Commands..."). Step ini kebetulan sudah aman (semua
+          # command berisiko sudah dibungkus `|| true`), tapi +e eksplisit
+          # tetap ditambahkan biar konsisten dan tidak jadi jebakan diam-diam
+          # kalau ada yang menambah command baru di sini nanti tanpa sadar.
+          set +e
           set -uo pipefail
           echo "===================================================="
           echo "[QA] Testing AUR Helper (yay) Compatibility"
@@ -277,27 +474,43 @@ jobs:
       # --- TAHAP 5: SAFETY LAYER & EDGE CASES TESTING ---
       - name: QA Test Safety Layer & Edge Cases
         run: |
+          # Sama seperti step-step lain: set +e eksplisit wajib karena
+          # invocation default GitHub Actions untuk container job adalah
+          # `sh -e {0}`, jadi -e sudah aktif sebelum baris `set` manapun di
+          # sini sempat jalan.
+          set +e
           set -uo pipefail
           echo "===================================================="
           echo "[QA] Testing Safety Layer (Lock Handling Detection)"
           echo "===================================================="
 
-          # Buat file db.lck simulasi
+          # Trap ini jaring pengaman untuk crash TAK TERDUGA (mis. atha doctor
+          # segfault) — trap EXIT baru jalan saat SELURUH step ini selesai,
+          # bukan langsung setelah `atha doctor` dipanggil. Makanya verifikasi
+          # "sudah bersih" di bawah TIDAK BOLEH mengandalkan trap ini sudah
+          # jalan (itu bug P1 dari Greptile: dicek sebelum trap sempat
+          # eksekusi, jadi selalu gagal) — cleanup utamanya dilakukan manual
+          # lewat `rm` di bawah, trap cuma cadangan.
+          trap 'rm -f /var/lib/pacman/db.lck' EXIT
           touch /var/lib/pacman/db.lck
-          
-          # Jalankan atha doctor dan tangkap output-nya
+
           DOCTOR_OUTPUT=$(atha doctor 2>&1 || true)
           echo "$DOCTOR_OUTPUT"
 
-          # Bersihkan file lck secara manual setelah pengujian selesai
           rm -f /var/lib/pacman/db.lck
 
-          # Assert: pastikan atha doctor mendeteksi keberadaan db.lck
           if echo "$DOCTOR_OUTPUT" | grep -q "pacman database lock exists"; then
             echo "[PASS] atha doctor berhasil mendeteksi keberadaan db.lck"
           else
             echo "[FAIL] atha doctor gagal mendeteksi db.lck"
             exit 1
+          fi
+
+          if [ -f /var/lib/pacman/db.lck ]; then
+            echo "[FAIL] db.lck masih ada setelah rm manual — sistem file bermasalah?"
+            exit 1
+          else
+            echo "[PASS] db.lck berhasil dibersihkan"
           fi
 
           echo "===================================================="
