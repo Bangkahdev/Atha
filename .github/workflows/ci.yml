@@ -186,7 +186,20 @@ jobs:
       # --- TAHAP 3: FULL CLI FEATURE & REGRESSION TEST SUITE ---
       - name: QA Test All CLI Commands, Modes & Known Regressions
         run: |
-          set -uo pipefail   # tanpa -e: assertion helper di bawah yang menentukan pass/fail
+          # PENTING: GitHub Actions menjalankan setiap `run:` di container job
+          # lewat `sh -e {0}` secara default (lihat log mentah run manapun:
+          # ada baris "shell: sh -e {0}") — artinya `-e` (errexit) SUDAH aktif
+          # sejak shell ini di-invoke oleh runner, SEBELUM baris `set` manapun
+          # di script ini sempat jalan. `set -uo pipefail` HANYA menambahkan
+          # flag -u dan pipefail; itu TIDAK mencabut -e yang sudah menyala.
+          # Ini penyebab asli beberapa "hang misterius" sebelumnya: begitu
+          # command standalone (di luar if/assert helper) mengembalikan
+          # non-zero — padahal itu justru HASIL YANG DIHARAPKAN dari uji
+          # tersebut — errexit langsung membunuh seluruh script tanpa jejak,
+          # tanpa sempat mencetak [FAIL] apa pun. `set +e` di sini WAJIB ada
+          # untuk benar-benar mematikannya, baru -u dan pipefail diaktifkan.
+          set +e
+          set -uo pipefail   # -e sengaja OFF: assertion helper di bawah yang menentukan pass/fail
           echo "===================================================="
           echo "[QA] Full CLI Feature & Regression Test Suite"
           echo "===================================================="
@@ -434,6 +447,13 @@ jobs:
       # --- TAHAP 4: AUR HELPER (YAY) INTEGRATION TEST ---
       - name: QA Test AUR Helper Integration (yay)
         run: |
+          # set +e wajib: sh -e {0} adalah invocation default GitHub Actions
+          # untuk container job (lihat penjelasan lengkap di step "QA Test
+          # All CLI Commands..."). Step ini kebetulan sudah aman (semua
+          # command berisiko sudah dibungkus `|| true`), tapi +e eksplisit
+          # tetap ditambahkan biar konsisten dan tidak jadi jebakan diam-diam
+          # kalau ada yang menambah command baru di sini nanti tanpa sadar.
+          set +e
           set -uo pipefail
           echo "===================================================="
           echo "[QA] Testing AUR Helper (yay) Compatibility"
@@ -454,6 +474,11 @@ jobs:
       # --- TAHAP 5: SAFETY LAYER & EDGE CASES TESTING ---
       - name: QA Test Safety Layer & Edge Cases
         run: |
+          # Sama seperti step-step lain: set +e eksplisit wajib karena
+          # invocation default GitHub Actions untuk container job adalah
+          # `sh -e {0}`, jadi -e sudah aktif sebelum baris `set` manapun di
+          # sini sempat jalan.
+          set +e
           set -uo pipefail
           echo "===================================================="
           echo "[QA] Testing Safety Layer (Lock Handling Detection)"
