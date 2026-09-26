@@ -211,7 +211,20 @@ jobs:
               cat /tmp/assert_out.log
               FAILED=1
             else
-              echo "[PASS] $desc (gagal seperti yang diharapkan)"
+              local rc=$?
+              # Exit 124 dari `timeout` bukan "gagal sesuai harapan" — itu
+              # tanda command menggantung/tidak sempat selesai dalam batas
+              # waktu, hasilnya TIDAK KONKLUSIF. Kalau ini diterima begitu
+              # saja sebagai [PASS], hang beneran di masa depan akan lolos
+              # diam-diam persis seperti bug di uji injeksi sebelumnya —
+              # cuma sekarang lewat helper ini, bukan cuma satu titik manual.
+              if [ "$rc" -eq 124 ]; then
+                echo "[FAIL] $desc TIMEOUT — bukan bukti gagal sesuai harapan, kemungkinan menggantung"
+                cat /tmp/assert_out.log
+                FAILED=1
+              else
+                echo "[PASS] $desc (gagal seperti yang diharapkan, exit=$rc)"
+              fi
             fi
           }
 
