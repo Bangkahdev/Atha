@@ -179,3 +179,7 @@ atha --help
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](https://www.google.com/search?q=LICENSE) for details.
+
+---
+
+Bagian dari gudang project publik **[Bangkah](https://bangkah.tech)** — dokumentasi dan alat developer di satu domain.
